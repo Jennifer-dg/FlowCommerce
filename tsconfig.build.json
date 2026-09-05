@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "incremental": false
+    "types": ["node", "jest", "mocha"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts", "src/db/seed.ts"]
+  "exclude": ["node_modules", "test", "dist", "src/db/seed.ts"]
 }
