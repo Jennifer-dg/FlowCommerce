@@ -27,7 +27,7 @@ export interface CreateProjectRequest {
   description?: string | null;
 }
 
-export interface ProjectResponse extends Project {}
+export type ProjectResponse = Project;
 
 export interface AddMemberRequest {
   userId: string;
@@ -65,7 +65,7 @@ export interface UpdateResourceRequest {
   description?: string | null;
 }
 
-export interface ResourceResponse extends Resource {}
+export type ResourceResponse = Resource;
 
 export interface ResourceListResponse {
   resources: ResourceResponse[];
