@@ -1,8 +1,8 @@
 # Flowcommerce Backend
 
-Backend API for the Flowcommerce university project.
+API backend para el proyecto de Flowcommerce.
 
-## Stack
+## Tecnologías
 
 - Node.js 24 LTS
 - NestJS
@@ -10,7 +10,7 @@ Backend API for the Flowcommerce university project.
 - Drizzle ORM
 - pnpm workspaces
 
-## Setup
+## Configuración
 
 ```bash
 pnpm install
@@ -21,24 +21,24 @@ pnpm run db:seed
 pnpm run dev
 ```
 
-Swagger is available at `http://localhost:3000/docs`.
+Swagger está disponible en `http://localhost:3000/docs`.
 
 ## Scripts
 
-| Command | Description |
+| Comando | Descripción |
 |---------|-------------|
-| `pnpm run docker:up` | Start PostgreSQL container |
-| `pnpm run docker:down` | Stop PostgreSQL container |
-| `pnpm run db:generate` | Generate Drizzle migrations from schema |
-| `pnpm run db:migrate` | Apply migrations |
-| `pnpm run db:seed` | Run idempotent development seed |
-| `pnpm run dev` | Start API in watch mode |
-| `pnpm run test` | Unit tests |
-| `pnpm run test:e2e` | E2E tests |
+| `pnpm run docker:up` | Iniciar el contenedor de PostgreSQL |
+| `pnpm run docker:down` | Detener el contenedor de PostgreSQL |
+| `pnpm run db:generate` | Generar migraciones de Drizzle a partir del esquema |
+| `pnpm run db:migrate` | Aplicar migraciones |
+| `pnpm run db:seed` | Ejecutar la carga de datos de desarrollo idempotente |
+| `pnpm run dev` | Iniciar la API en modo watch |
+| `pnpm run test` | Pruebas unitarias |
+| `pnpm run test:e2e` | Pruebas E2E |
 
 ## API
 
-Base path: `/api/v1`
+Ruta base: `/api/v1`
 
 - `POST /api/v1/auth/sign-up`
 - `POST /api/v1/auth/login`
