@@ -17,6 +17,19 @@ export interface CreateMessageInput {
 // el puerto.
 export interface MessagesRepository {
   create(input: CreateMessageInput): Promise<MessageEntity>;
+  // Idempotente para reintentos del webhook: si el wamid ya existe en el
+  // tenant, no duplica la fila. Devuelve null cuando el conflicto es de otro
+  // proyecto (el índice único es global) para no cruzar tenants.
+  createIfNotExists(input: CreateMessageInput): Promise<MessageEntity | null>;
+  findByWhatsappMessageIdInProject(
+    whatsappMessageId: string,
+    projectId: string,
+  ): Promise<MessageEntity | null>;
+  updateStatusInProject(
+    whatsappMessageId: string,
+    projectId: string,
+    status: string,
+  ): Promise<MessageEntity | null>;
   // Los mensajes de un lead, más antiguos primero. Devuelve [] si el lead no
   // existe en ese proyecto, igual que si no tiene mensajes: el 404 del lead
   // lo decide el use-case, no el almacén.

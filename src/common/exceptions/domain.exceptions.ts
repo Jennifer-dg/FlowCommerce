@@ -51,3 +51,29 @@ export class NotFoundException extends HttpException {
     );
   }
 }
+
+export class BadGatewayException extends HttpException {
+  constructor(message = 'Bad Gateway') {
+    super(
+      {
+        statusCode: HttpStatus.BAD_GATEWAY,
+        message,
+        error: 'Bad Gateway',
+      },
+      HttpStatus.BAD_GATEWAY,
+    );
+  }
+}
+
+export class ServiceUnavailableException extends HttpException {
+  constructor(message = 'Service Unavailable') {
+    super(
+      {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        message,
+        error: 'Service Unavailable',
+      },
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+}

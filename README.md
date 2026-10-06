@@ -23,6 +23,8 @@ pnpm run dev
 
 Swagger está disponible en `http://localhost:3000/docs`.
 
+WhatsApp Cloud API usa las variables `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_APP_SECRET`, `WHATSAPP_VERIFY_TOKEN` y `WHATSAPP_PROJECT_ID` definidas en `.env.example`. El webhook de Meta es `GET/POST /api/v1/webhooks/whatsapp`.
+
 ## Scripts
 
 | Comando | Descripción |

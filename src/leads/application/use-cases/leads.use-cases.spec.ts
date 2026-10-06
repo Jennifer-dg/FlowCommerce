@@ -19,6 +19,7 @@ describe('Leads use-cases (tenant isolation)', () => {
   };
   const leadRepository: Record<keyof LeadRepository, jest.Mock> = {
     findByIdInProject: jest.fn(),
+    findByPhoneDigitsInProject: jest.fn(),
     listByProject: jest.fn(),
     create: jest.fn(),
     updateInProject: jest.fn(),

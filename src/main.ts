@@ -5,7 +5,9 @@ import { AppModule } from './app.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // rawBody es obligatorio para verificar X-Hub-Signature-256 de WhatsApp:
+  // la firma se calcula sobre el buffer original, no sobre el JSON parseado.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.setGlobalPrefix('api');
   app.enableVersioning({

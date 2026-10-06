@@ -46,6 +46,13 @@ export interface PaginatedLeads {
 // nombre del método, de modo que la restricción se ve al leer la firma.
 export interface LeadRepository {
   findByIdInProject(id: LeadId, projectId: string): Promise<LeadEntity | null>;
+  // Localiza un lead por el número en dígitos (sin '+'/espacios) DENTRO del
+  // proyecto. El webhook de WhatsApp no trae leadId: hay que casar el `from`
+  // con un teléfono del tenant, nunca con un listado global.
+  findByPhoneDigitsInProject(
+    phoneDigits: string,
+    projectId: string,
+  ): Promise<LeadEntity | null>;
   listByProject(
     projectId: string,
     filter?: ListLeadsFilter,

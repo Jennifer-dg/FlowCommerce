@@ -26,6 +26,7 @@ describe('SendMessageUseCase', () => {
   };
   const leadRepository: Record<keyof LeadRepository, jest.Mock> = {
     findByIdInProject: jest.fn(),
+    findByPhoneDigitsInProject: jest.fn(),
     listByProject: jest.fn(),
     create: jest.fn(),
     updateInProject: jest.fn(),
@@ -36,6 +37,9 @@ describe('SendMessageUseCase', () => {
   };
   const messagesRepository: Record<keyof MessagesRepository, jest.Mock> = {
     create: jest.fn(),
+    createIfNotExists: jest.fn(),
+    findByWhatsappMessageIdInProject: jest.fn(),
+    updateStatusInProject: jest.fn(),
     findByLeadId: jest.fn(),
   };
 

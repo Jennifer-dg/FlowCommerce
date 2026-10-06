@@ -1,6 +1,10 @@
 process.env.DATABASE_URL ??=
   'postgresql://flowcommerce:flowcommerce@localhost:5432/flowcommerce_dev';
 process.env.NODE_ENV ??= 'test';
+process.env.WHATSAPP_TOKEN ??= 'e2e-whatsapp-token';
+process.env.WHATSAPP_PHONE_NUMBER_ID ??= 'e2e-phone-id';
+process.env.WHATSAPP_APP_SECRET ??= 'e2e-whatsapp-app-secret';
+process.env.WHATSAPP_VERIFY_TOKEN ??= 'e2e-whatsapp-verify-token';
 
 // Better Auth ships pure-ESM builds that this Jest setup (CommonJS/ts-jest)
 // cannot load directly. The e2e suites do not exercise Better Auth (the

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, eq, ilike, or, type SQL } from 'drizzle-orm';
+import { and, asc, count, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
 import type { Database } from '../../../db';
 import { DATABASE_CLIENT } from '../../../db/database.constants';
 import { leads, type LeadRow } from '../../../db/schema';
@@ -31,6 +31,24 @@ export class DrizzleLeadRepository implements LeadRepository {
   ): Promise<LeadEntity | null> {
     const row = await this.db.query.leads.findFirst({
       where: and(eq(leads.id, id), eq(leads.projectId, projectId)),
+    });
+
+    return row ? this.mapToEntity(row) : null;
+  }
+
+  async findByPhoneDigitsInProject(
+    phoneDigits: string,
+    projectId: string,
+  ): Promise<LeadEntity | null> {
+    if (!phoneDigits) {
+      return null;
+    }
+
+    const row = await this.db.query.leads.findFirst({
+      where: and(
+        eq(leads.projectId, projectId),
+        sql`regexp_replace(coalesce(${leads.phone}, ''), '[^0-9]', '', 'g') = ${phoneDigits}`,
+      ),
     });
 
     return row ? this.mapToEntity(row) : null;

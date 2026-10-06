@@ -34,6 +34,66 @@ export class DrizzleMessagesRepository implements MessagesRepository {
     return this.mapToEntity(row);
   }
 
+  async createIfNotExists(
+    input: CreateMessageInput,
+  ): Promise<MessageEntity | null> {
+    const [row] = await this.db
+      .insert(messages)
+      .values({
+        projectId: input.projectId,
+        leadId: input.leadId,
+        whatsappMessageId: input.whatsappMessageId,
+        direction: input.direction,
+        content: input.content,
+        status: input.status,
+      })
+      .onConflictDoNothing({ target: messages.whatsappMessageId })
+      .returning();
+
+    if (row) {
+      return this.mapToEntity(row);
+    }
+
+    // Conflicto de wamid: solo se reutiliza si ya pertenece a ESTE proyecto.
+    return this.findByWhatsappMessageIdInProject(
+      input.whatsappMessageId,
+      input.projectId,
+    );
+  }
+
+  async findByWhatsappMessageIdInProject(
+    whatsappMessageId: string,
+    projectId: string,
+  ): Promise<MessageEntity | null> {
+    const row = await this.db.query.messages.findFirst({
+      where: and(
+        eq(messages.whatsappMessageId, whatsappMessageId),
+        eq(messages.projectId, projectId),
+      ),
+    });
+
+    return row ? this.mapToEntity(row) : null;
+  }
+
+  async updateStatusInProject(
+    whatsappMessageId: string,
+    projectId: string,
+    status: string,
+  ): Promise<MessageEntity | null> {
+    const [row] = await this.db
+      .update(messages)
+      .set({ status })
+      .where(
+        and(
+          eq(messages.whatsappMessageId, whatsappMessageId),
+          eq(messages.projectId, projectId),
+        ),
+      )
+      .returning();
+
+    return row ? this.mapToEntity(row) : null;
+  }
+
   // Ambos criterios van al WHERE y se combinan con AND: leadId acota dentro
   // del tenant y projectId fija el tenant. Ninguno sustituye al otro, de modo
   // que filtrar solo por leadId sería imposible aunque alguien refactorizara.
