@@ -27,21 +27,35 @@ describe('role-permissions matrix', () => {
     expect(roleHasPermission(Role.ADMIN, Permission.PROJECT_UPDATE)).toBe(true);
     expect(roleHasPermission(Role.ADMIN, Permission.MEMBER_INVITE)).toBe(true);
     expect(roleHasPermission(Role.ADMIN, Permission.MEMBER_REMOVE)).toBe(true);
-    expect(roleHasPermission(Role.ADMIN, Permission.RESOURCE_DELETE)).toBe(
-      true,
-    );
+    expect(roleHasPermission(Role.ADMIN, Permission.LEAD_DELETE)).toBe(true);
   });
 
-  it('keeps MEMBER read/mutate resources but no member management', () => {
-    expect(roleHasPermission(Role.MEMBER, Permission.RESOURCE_CREATE)).toBe(
-      true,
+  it('exposes no permission for the retired resources module', () => {
+    // El módulo de ejemplo se eliminó y sus permisos se retiraron del enum
+    // compartido. No se dejan valores muertos: si quedaran, cualquier código que
+    // iterara Object.values(Permission) los trataría como permisos reales.
+    const names = Object.values(Permission) as string[];
+    expect(names.filter((name) => name.startsWith('RESOURCE_'))).toEqual([]);
+  });
+
+  it('grants every declared permission to at least one role', () => {
+    // Invariante del enum: un permiso que ningún rol otorga es inalcanzable y
+    // sería un endpoint que siempre responde 403.
+    const allRoles = [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.VIEWER];
+    const orphaned = (Object.values(Permission) as Permission[]).filter(
+      (permission) =>
+        !allRoles.some((role) => roleHasPermission(role, permission)),
     );
-    expect(roleHasPermission(Role.MEMBER, Permission.RESOURCE_UPDATE)).toBe(
-      true,
-    );
-    expect(roleHasPermission(Role.MEMBER, Permission.RESOURCE_DELETE)).toBe(
-      false,
-    );
+
+    expect(orphaned).toEqual([]);
+  });
+
+  it('lets MEMBER operate the funnel but never delete a lead', () => {
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_CREATE)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_UPDATE)).toBe(true);
+    // Borrar un lead es irreversible y arrastra sus cotizaciones y mensajes por
+    // la FK compuesta con ON DELETE CASCADE. Queda en ADMIN y OWNER.
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_DELETE)).toBe(false);
     expect(roleHasPermission(Role.MEMBER, Permission.MEMBER_INVITE)).toBe(
       false,
     );
@@ -50,19 +64,53 @@ describe('role-permissions matrix', () => {
     );
   });
 
-  it('restricts VIEWER to read-only access', () => {
+  it('restricts VIEWER to read-only access, including CRM', () => {
     expect(roleHasPermission(Role.VIEWER, Permission.PROJECT_READ)).toBe(true);
     expect(roleHasPermission(Role.VIEWER, Permission.MEMBER_READ)).toBe(true);
-    expect(roleHasPermission(Role.VIEWER, Permission.RESOURCE_READ)).toBe(true);
     expect(roleHasPermission(Role.VIEWER, Permission.PROJECT_UPDATE)).toBe(
       false,
     );
-    expect(roleHasPermission(Role.VIEWER, Permission.RESOURCE_CREATE)).toBe(
+    expect(roleHasPermission(Role.VIEWER, Permission.LEAD_CREATE)).toBe(false);
+    expect(roleHasPermission(Role.VIEWER, Permission.LEAD_UPDATE)).toBe(false);
+    expect(roleHasPermission(Role.VIEWER, Permission.LEAD_DELETE)).toBe(false);
+    expect(roleHasPermission(Role.VIEWER, Permission.QUOTE_CREATE)).toBe(false);
+    expect(roleHasPermission(Role.VIEWER, Permission.QUOTE_APPROVE)).toBe(
       false,
     );
-    expect(roleHasPermission(Role.VIEWER, Permission.RESOURCE_DELETE)).toBe(
+    expect(
+      roleHasPermission(Role.VIEWER, Permission.WHATSAPP_SEND_MESSAGE),
+    ).toBe(false);
+  });
+
+  it('grants ADMIN the whole CRM surface', () => {
+    for (const permission of [
+      Permission.LEAD_CREATE,
+      Permission.LEAD_READ,
+      Permission.LEAD_UPDATE,
+      Permission.QUOTE_CREATE,
+      Permission.QUOTE_READ,
+      Permission.QUOTE_APPROVE,
+      Permission.WHATSAPP_SEND_MESSAGE,
+    ]) {
+      expect(roleHasPermission(Role.ADMIN, permission)).toBe(true);
+    }
+  });
+
+  it('lets MEMBER work leads and quotes but never approve or delete them', () => {
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_CREATE)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_READ)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_UPDATE)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.QUOTE_CREATE)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.QUOTE_READ)).toBe(true);
+    expect(
+      roleHasPermission(Role.MEMBER, Permission.WHATSAPP_SEND_MESSAGE),
+    ).toBe(true);
+
+    // Aprobar cotizaciones es una decisión comercial: nunca se delega en MEMBER.
+    expect(roleHasPermission(Role.MEMBER, Permission.QUOTE_APPROVE)).toBe(
       false,
     );
+    expect(roleHasPermission(Role.MEMBER, Permission.LEAD_DELETE)).toBe(false);
   });
 
   it('evaluates ALL vs ANY semantics', () => {
@@ -75,12 +123,12 @@ describe('role-permissions matrix', () => {
     expect(
       roleHasAnyPermission(Role.MEMBER, [
         Permission.PROJECT_DELETE,
-        Permission.RESOURCE_CREATE,
+        Permission.LEAD_CREATE,
       ]),
     ).toBe(true);
     expect(
       roleHasAllPermissions(Role.MEMBER, [
-        Permission.RESOURCE_DELETE,
+        Permission.LEAD_DELETE,
         Permission.MEMBER_INVITE,
       ]),
     ).toBe(false);

@@ -125,7 +125,7 @@ describe('AuthorizationService', () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(null);
 
     await expect(
-      service.assertCan(userId, Permission.RESOURCE_CREATE, projectId),
+      service.assertCan(userId, Permission.LEAD_CREATE, projectId),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
@@ -140,7 +140,7 @@ describe('AuthorizationService', () => {
     });
 
     await expect(
-      service.assertCan(userId, Permission.RESOURCE_CREATE, projectId),
+      service.assertCan(userId, Permission.LEAD_CREATE, projectId),
     ).resolves.toBeUndefined();
   });
 });

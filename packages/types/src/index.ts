@@ -20,10 +20,14 @@ export const Permission = {
   MEMBER_INVITE: 'MEMBER_INVITE',
   MEMBER_UPDATE_ROLE: 'MEMBER_UPDATE_ROLE',
   MEMBER_REMOVE: 'MEMBER_REMOVE',
-  RESOURCE_READ: 'RESOURCE_READ',
-  RESOURCE_CREATE: 'RESOURCE_CREATE',
-  RESOURCE_UPDATE: 'RESOURCE_UPDATE',
-  RESOURCE_DELETE: 'RESOURCE_DELETE',
+  LEAD_CREATE: 'LEAD_CREATE',
+  LEAD_READ: 'LEAD_READ',
+  LEAD_UPDATE: 'LEAD_UPDATE',
+  LEAD_DELETE: 'LEAD_DELETE',
+  QUOTE_CREATE: 'QUOTE_CREATE',
+  QUOTE_READ: 'QUOTE_READ',
+  QUOTE_APPROVE: 'QUOTE_APPROVE',
+  WHATSAPP_SEND_MESSAGE: 'WHATSAPP_SEND_MESSAGE',
 } as const;
 
 export type Permission =
@@ -89,4 +93,76 @@ export interface PaginationMeta {
 export interface PaginatedResult<T> {
   data: T[];
   meta: PaginationMeta;
+}
+
+/* ------------------------------------------------------------------ */
+/* CRM: leads, quotes y mensajes                                       */
+/* ------------------------------------------------------------------ */
+
+export const LeadStage = {
+  NEW: 'NEW',
+  CONTACTED: 'CONTACTED',
+  QUALIFIED: 'QUALIFIED',
+  PROPOSAL: 'PROPOSAL',
+  WON: 'WON',
+  LOST: 'LOST',
+} as const;
+
+export type LeadStage = (typeof LeadStage)[keyof typeof LeadStage];
+
+export const QuoteStatus = {
+  DRAFT: 'DRAFT',
+  PENDING_APPROVAL: 'PENDING_APPROVAL',
+  APPROVED: 'APPROVED',
+  PAID: 'PAID',
+} as const;
+
+export type QuoteStatus = (typeof QuoteStatus)[keyof typeof QuoteStatus];
+
+export const MessageDirection = {
+  INBOUND: 'INBOUND',
+  OUTBOUND: 'OUTBOUND',
+} as const;
+
+export type MessageDirection =
+  (typeof MessageDirection)[keyof typeof MessageDirection];
+
+export type LeadId = string;
+export type QuoteId = string;
+export type MessageId = string;
+
+export interface Lead {
+  id: LeadId;
+  projectId: ProjectId;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  stage: LeadStage;
+  score: number;
+  creadoEn: Date;
+  actualizadoEn: Date;
+}
+
+export interface Quote {
+  id: QuoteId;
+  projectId: ProjectId;
+  leadId: LeadId;
+  folio: string;
+  subtotal: number;
+  tax: number;
+  total: number;
+  status: QuoteStatus;
+  creadoEn: Date;
+  actualizadoEn: Date;
+}
+
+export interface Message {
+  id: MessageId;
+  projectId: ProjectId;
+  leadId: LeadId;
+  whatsappMessageId: string;
+  direction: MessageDirection;
+  content: string;
+  status: string;
+  creadoEn: Date;
 }

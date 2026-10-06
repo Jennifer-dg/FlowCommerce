@@ -4,7 +4,7 @@ import {
   VersioningType,
 } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { randomUUID } from 'node:crypto';
@@ -12,7 +12,7 @@ import { AppModule } from '../src/app.module';
 import { GlobalExceptionFilter } from '../src/common/filters/global-exception.filter';
 import type { Database } from '../src/db';
 import { DATABASE_CLIENT } from '../src/db/database.constants';
-import { memberships, projects, resources, users } from '../src/db/schema';
+import { leads, memberships, projects, users } from '../src/db/schema';
 import { SESSION_MANAGER } from '../src/auth/application/ports/session-manager';
 
 describe('Authorization & Multi-tenancy (e2e)', () => {
@@ -34,8 +34,9 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
   const projectA = randomUUID();
   const projectB = randomUUID();
 
-  const resourceA = randomUUID();
-  const resourceB = randomUUID();
+  // Un lead por tenant: el de B es el que se usa para los intentos de IDOR.
+  const leadA = randomUUID();
+  const leadB = randomUUID();
 
   const userOf = (id: string) => ({
     id,
@@ -98,9 +99,7 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
     db = app.get(DATABASE_CLIENT);
 
     // Idempotent cleanup for the IDs this suite manages.
-    await db
-      .delete(resources)
-      .where(inArray(resources.id, [resourceA, resourceB]));
+    await db.delete(leads).where(inArray(leads.id, [leadA, leadB]));
     await db
       .delete(memberships)
       .where(
@@ -144,16 +143,26 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
       { id: randomUUID(), userId: ownerB, projectId: projectB, role: 'OWNER' },
     ]);
 
-    await db.insert(resources).values([
-      { id: resourceA, projectId: projectA, name: 'Resource A' },
-      { id: resourceB, projectId: projectB, name: 'Resource B' },
+    await db.insert(leads).values([
+      {
+        id: leadA,
+        projectId: projectA,
+        name: 'Lead A',
+        email: 'lead-a@example.com',
+        phone: null,
+      },
+      {
+        id: leadB,
+        projectId: projectB,
+        name: 'Lead B',
+        email: 'lead-b@example.com',
+        phone: null,
+      },
     ]);
   });
 
   afterAll(async () => {
-    await db
-      .delete(resources)
-      .where(inArray(resources.id, [resourceA, resourceB]));
+    await db.delete(leads).where(inArray(leads.id, [leadA, leadB]));
     await db
       .delete(memberships)
       .where(
@@ -172,72 +181,98 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
 
   it('rejects anonymous requests with 401', async () => {
     await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectA}/resources`)
+      .get(`/api/v1/projects/${projectA}/leads`)
       .expect(401);
   });
 
-  it('allows a MEMBER to list resources of its own tenant', async () => {
+  it('allows a MEMBER to list leads of its own tenant', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectA}/resources`)
+      .get(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(memberA))
       .expect(200);
 
-    const body = response.body as { resources?: unknown[] };
-    expect(Array.isArray(body)).toBe(true);
+    const body = response.body as { data: unknown[]; meta: { total: number } };
+    expect(Array.isArray(body.data)).toBe(true);
+    expect(typeof body.meta.total).toBe('number');
   });
 
   // ---------------------------------------------------------------------------
-  // 2. Role -> permission matrix over resources
+  // 2. Role -> permission matrix over leads
   // ---------------------------------------------------------------------------
 
-  it('lets OWNER create a resource', async () => {
+  it('lets OWNER create a lead', async () => {
     const created = await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectA}/resources`)
+      .post(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(ownerA))
-      .send({ name: 'Owned resource' })
+      .send({ name: 'Owned lead' })
       .expect(201);
 
     expect((created.body as { projectId: string }).projectId).toBe(projectA);
   });
 
-  it('lets MEMBER create a resource but not delete it', async () => {
+  it('lets MEMBER create a lead but not delete it', async () => {
     await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectA}/resources`)
+      .post(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(memberA))
-      .send({ name: 'Member resource' })
+      .send({ name: 'Member lead' })
       .expect(201);
 
+    // LEAD_DELETE no está en la matriz de MEMBER: es una operación
+    // destructiva en cascada sobre quotes y messages, así que se reserva.
     await request(app.getHttpServer())
-      .delete(`/api/v1/projects/${projectA}/resources/${resourceA}`)
+      .delete(`/api/v1/projects/${projectA}/leads/${leadA}`)
       .set('Cookie', cookie(memberA))
       .expect(403);
   });
 
-  it('forbids VIEWER from creating a resource (403)', async () => {
+  it('lets MEMBER update a lead', async () => {
     await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectA}/resources`)
+      .patch(`/api/v1/projects/${projectA}/leads/${leadA}`)
+      .set('Cookie', cookie(memberA))
+      .send({ name: 'Renamed by member' })
+      .expect(200);
+
+    // La escritura sí ocurrió: el update no fue un 403 disfrazado.
+    const [row] = await db
+      .select({ name: leads.name })
+      .from(leads)
+      .where(and(eq(leads.id, leadA), eq(leads.projectId, projectA)));
+    expect(row?.name).toBe('Renamed by member');
+  });
+
+  it('forbids VIEWER from creating a lead (403)', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(viewerA))
-      .send({ name: 'Viewer resource' })
+      .send({ name: 'Viewer lead' })
       .expect(403);
   });
 
-  it('lets VIEWER read resources', async () => {
+  it('forbids VIEWER from updating a lead (403)', async () => {
     await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectA}/resources`)
+      .patch(`/api/v1/projects/${projectA}/leads/${leadA}`)
+      .set('Cookie', cookie(viewerA))
+      .send({ name: 'Hijacked by viewer' })
+      .expect(403);
+  });
+
+  it('lets VIEWER read leads', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(viewerA))
       .expect(200);
   });
 
-  it('lets ADMIN delete project resources', async () => {
+  it('lets ADMIN delete project leads', async () => {
     const created = await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectA}/resources`)
+      .post(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(adminA))
-      .send({ name: 'Admins resource' })
+      .send({ name: 'Admins lead' })
       .expect(201);
 
     await request(app.getHttpServer())
       .delete(
-        `/api/v1/projects/${projectA}/resources/${
+        `/api/v1/projects/${projectA}/leads/${
           (created.body as { id: string }).id
         }`,
       )
@@ -251,7 +286,7 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
 
   it('denies access to a project the user is not a member of (403)', async () => {
     await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectB}/resources`)
+      .get(`/api/v1/projects/${projectB}/leads`)
       .set('Cookie', cookie(ownerA))
       .expect(403);
   });
@@ -264,43 +299,154 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 4. IDOR: knowing another tenant's resource id must not grant access
+  // 4. IDOR: knowing another tenant's lead id must not grant access
   // ---------------------------------------------------------------------------
 
-  it('returns 404 when fetching a resource from another tenant by id', async () => {
+  it('returns 404 when fetching a lead from another tenant by id', async () => {
     await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectA}/resources/${resourceB}`)
+      .get(`/api/v1/projects/${projectA}/leads/${leadB}`)
       .set('Cookie', cookie(ownerA))
       .expect(404);
   });
 
-  it('returns 404 when updating a resource from another tenant', async () => {
+  it('returns 404 when updating a lead from another tenant', async () => {
     await request(app.getHttpServer())
-      .patch(`/api/v1/projects/${projectA}/resources/${resourceB}`)
+      .patch(`/api/v1/projects/${projectA}/leads/${leadB}`)
       .set('Cookie', cookie(adminA))
       .send({ name: 'Hijacked' })
       .expect(404);
+
+    // Y el lead de B sigue intacto: el 404 no es solo cosmético.
+    const [row] = await db
+      .select({ name: leads.name })
+      .from(leads)
+      .where(and(eq(leads.id, leadB), eq(leads.projectId, projectB)));
+    expect(row?.name).toBe('Lead B');
   });
 
-  it('returns 404 when deleting a resource from another tenant', async () => {
+  it('returns 404 when deleting a lead from another tenant', async () => {
     await request(app.getHttpServer())
-      .delete(`/api/v1/projects/${projectA}/resources/${resourceB}`)
+      .delete(`/api/v1/projects/${projectA}/leads/${leadB}`)
       .set('Cookie', cookie(ownerA))
       .expect(404);
+
+    const rows = await db
+      .select({ id: leads.id })
+      .from(leads)
+      .where(and(eq(leads.id, leadB), eq(leads.projectId, projectB)));
+    expect(rows).toHaveLength(1);
   });
 
-  it('does not leak resources from other tenants in list()', async () => {
+  it('does not leak leads from other tenants in list()', async () => {
     const response = await request(app.getHttpServer())
-      .get(`/api/v1/projects/${projectA}/resources`)
+      .get(`/api/v1/projects/${projectA}/leads`)
       .set('Cookie', cookie(memberA))
       .expect(200);
 
-    const body = response.body as { id: string }[];
-    expect(body.some((resource) => resource.id === resourceB)).toBe(false);
+    const body = response.body as { data: { id: string }[] };
+    expect(body.data.some((lead) => lead.id === leadB)).toBe(false);
   });
 
   // ---------------------------------------------------------------------------
-  // 5. Ownership rules (project A: ownerA is the single OWNER)
+  // 5. Dynamic filters + pagination
+  // ---------------------------------------------------------------------------
+
+  it('filters by stage', async () => {
+    const created = await request(app.getHttpServer())
+      .post(`/api/v1/projects/${projectA}/leads`)
+      .set('Cookie', cookie(ownerA))
+      .send({ name: 'Filterable lead', stage: 'QUALIFIED' })
+      .expect(201);
+    const id = (created.body as { id: string }).id;
+
+    const response = await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?stage=QUALIFIED`)
+      .set('Cookie', cookie(ownerA))
+      .expect(200);
+
+    const body = response.body as { data: { id: string }[] };
+    expect(body.data.some((lead) => lead.id === id)).toBe(true);
+
+    // Un filtro que no coincide con nada devuelve la página vacía, no un 404.
+    const other = await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?stage=LOST`)
+      .set('Cookie', cookie(ownerA))
+      .expect(200);
+    expect(
+      (other.body as { data: unknown[] }).data.some(
+        (lead) => (lead as { id: string }).id === id,
+      ),
+    ).toBe(false);
+
+    await request(app.getHttpServer())
+      .delete(`/api/v1/projects/${projectA}/leads/${id}`)
+      .set('Cookie', cookie(ownerA))
+      .expect(204);
+  });
+
+  it('searches across name, email and phone', async () => {
+    const response = await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?search=lead-a`)
+      .set('Cookie', cookie(ownerA))
+      .expect(200);
+
+    const body = response.body as { data: { id: string }[] };
+    expect(body.data.some((lead) => lead.id === leadA)).toBe(true);
+  });
+
+  it('rejects an unknown stage filter with 400', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?stage=NOPE`)
+      .set('Cookie', cookie(ownerA))
+      .expect(400);
+  });
+
+  it('rejects an out-of-range limit with 400', async () => {
+    await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?limit=0`)
+      .set('Cookie', cookie(ownerA))
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?limit=101`)
+      .set('Cookie', cookie(ownerA))
+      .expect(400);
+  });
+
+  it('paginates and reports a total for the whole tenant', async () => {
+    const first = await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?page=1&limit=1`)
+      .set('Cookie', cookie(ownerA))
+      .expect(200);
+
+    const firstBody = first.body as {
+      data: unknown[];
+      meta: { page: number; limit: number; total: number; totalPages: number };
+    };
+    expect(firstBody.data).toHaveLength(1);
+    expect(firstBody.meta).toMatchObject({ page: 1, limit: 1 });
+    // El total cuenta TODAS las filas del tenant, no solo las de la página.
+    expect(firstBody.meta.total).toBeGreaterThan(1);
+    expect(firstBody.meta.totalPages).toBe(firstBody.meta.total);
+
+    const second = await request(app.getHttpServer())
+      .get(`/api/v1/projects/${projectA}/leads?page=2&limit=1`)
+      .set('Cookie', cookie(ownerA))
+      .expect(200);
+
+    const secondBody = second.body as {
+      data: { id: string }[];
+      meta: { total: number };
+    };
+    // La segunda página trae otra fila, no una repetición de la primera.
+    expect(secondBody.meta.total).toBe(firstBody.meta.total);
+    expect(secondBody.data[0]?.id).not.toBe(
+      (firstBody.data[0] as { id: string }).id,
+    );
+  });
+
+  // ---------------------------------------------------------------------------
+  // 6. Ownership rules (project A: ownerA is the single OWNER)
   // ---------------------------------------------------------------------------
 
   it('blocks demoting the last OWNER (403)', async () => {

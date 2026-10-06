@@ -1,14 +1,13 @@
 services:
   postgres:
     image: postgres:17
-    container_name: flowcommerce-postgres
     restart: unless-stopped
     ports:
-      - '5432:5432'
+      - '${POSTGRES_PORT:-5432}:5432'
     environment:
       POSTGRES_USER: flowcommerce
       POSTGRES_PASSWORD: flowcommerce
-      POSTGRES_DB: flowcommerce
+      POSTGRES_DB: ${POSTGRES_DB:-flowcommerce_dev}
     volumes:
       - flowcommerce_postgres_data:/var/lib/postgresql/data
     healthcheck:

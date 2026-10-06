@@ -1,5 +1,5 @@
 process.env.DATABASE_URL ??=
-  'postgresql://flowcommerce:flowcommerce@localhost:5432/flowcommerce';
+  'postgresql://flowcommerce:flowcommerce@localhost:5432/flowcommerce_dev';
 process.env.NODE_ENV ??= 'test';
 
 // Better Auth ships pure-ESM builds that this Jest setup (CommonJS/ts-jest)
