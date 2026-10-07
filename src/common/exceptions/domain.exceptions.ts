@@ -1,0 +1,79 @@
+import { HttpException, HttpStatus } from '@nestjs/common';
+
+export class ConflictException extends HttpException {
+  constructor(message: string) {
+    super(
+      {
+        statusCode: HttpStatus.CONFLICT,
+        message,
+        error: 'Conflict',
+      },
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class InvalidCredentialsException extends HttpException {
+  constructor() {
+    super(
+      {
+        statusCode: HttpStatus.UNAUTHORIZED,
+        message: 'Invalid credentials',
+        error: 'Unauthorized',
+      },
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class ForbiddenException extends HttpException {
+  constructor(message = 'Forbidden') {
+    super(
+      {
+        statusCode: HttpStatus.FORBIDDEN,
+        message,
+        error: 'Forbidden',
+      },
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class NotFoundException extends HttpException {
+  constructor(message = 'Not Found') {
+    super(
+      {
+        statusCode: HttpStatus.NOT_FOUND,
+        message,
+        error: 'Not Found',
+      },
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
+export class BadGatewayException extends HttpException {
+  constructor(message = 'Bad Gateway') {
+    super(
+      {
+        statusCode: HttpStatus.BAD_GATEWAY,
+        message,
+        error: 'Bad Gateway',
+      },
+      HttpStatus.BAD_GATEWAY,
+    );
+  }
+}
+
+export class ServiceUnavailableException extends HttpException {
+  constructor(message = 'Service Unavailable') {
+    super(
+      {
+        statusCode: HttpStatus.SERVICE_UNAVAILABLE,
+        message,
+        error: 'Service Unavailable',
+      },
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+}
