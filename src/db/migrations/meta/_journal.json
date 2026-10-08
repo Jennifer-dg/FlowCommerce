@@ -1,0 +1,97 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1756616400000,
+      "tag": "0000_create_users",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788241680606,
+      "tag": "0001_sticky_shockwave",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788318298632,
+      "tag": "0002_ordinary_hobgoblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788320239435,
+      "tag": "0003_boring_stark_industries",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791260081603,
+      "tag": "0004_crm_leads_quotes_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791396885361,
+      "tag": "0005_perpetual_cardiac",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791414194116,
+      "tag": "0006_products_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791414536808,
+      "tag": "0007_clients",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791414901367,
+      "tag": "0008_leads_pipeline_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791417352348,
+      "tag": "0009_quotes_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791419386246,
+      "tag": "0010_project_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791439180867,
+      "tag": "0011_lead_history_protection",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791439728766,
+      "tag": "0012_gt_defaults_paid_at",
+      "breakpoints": true
+    }
+  ]
+}
