@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import type { SafeUser } from '@flowcommerce/types';
 import type {
   AuthenticatedSession,
+  RequestPasswordResetInput,
+  ResetPasswordInput,
   SessionTokenResult,
   SignInSessionInput,
   SignUpSessionInput,
@@ -61,6 +63,8 @@ export class BetterAuthSessionManager implements SessionManager {
       body: {
         email: input.email,
         password: input.password,
+        // Con rememberMe=false Better Auth acorta la sesión a 1 día.
+        rememberMe: input.rememberMe ?? false,
       },
     });
 
@@ -98,6 +102,27 @@ export class BetterAuthSessionManager implements SessionManager {
   async signOut(headers: Headers): Promise<void> {
     await this.auth.api.signOut({
       headers: this.withForwardedFor(headers),
+    });
+  }
+
+  // Solicita el enlace de recuperación por correo. Better Auth responde con
+  // la misma respuesta genérica exista o no el usuario (anti-enumeración);
+  // el envío real ocurre dentro del handler sendResetPassword de la config.
+  async requestPasswordReset(input: RequestPasswordResetInput): Promise<void> {
+    await this.auth.api.requestPasswordReset({
+      body: { email: input.email },
+    });
+  }
+
+  // Aplica el token de recuperación: Better Auth lo consume (un solo uso),
+  // valida su expiración, guarda la contraseña nueva y, gracias a
+  // revokeSessionsOnPasswordReset, revoca todas las sesiones del usuario.
+  async resetPassword(input: ResetPasswordInput): Promise<void> {
+    await this.auth.api.resetPassword({
+      body: {
+        token: input.token,
+        newPassword: input.newPassword,
+      },
     });
   }
 

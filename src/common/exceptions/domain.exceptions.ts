@@ -1,5 +1,20 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 
+// Error de validación de negocio (400). Se usa cuando la petición llega bien
+// formada pero un dato (p. ej. un token) no es válido o ha caducado.
+export class BadRequestException extends HttpException {
+  constructor(message: string) {
+    super(
+      {
+        statusCode: HttpStatus.BAD_REQUEST,
+        message,
+        error: 'Bad Request',
+      },
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
 export class ConflictException extends HttpException {
   constructor(message: string) {
     super(

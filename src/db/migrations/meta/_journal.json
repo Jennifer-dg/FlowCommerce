@@ -36,6 +36,62 @@
       "when": 1791260081603,
       "tag": "0004_crm_leads_quotes_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791396885361,
+      "tag": "0005_perpetual_cardiac",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791414194116,
+      "tag": "0006_products_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791414536808,
+      "tag": "0007_clients",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791414901367,
+      "tag": "0008_leads_pipeline_fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791417352348,
+      "tag": "0009_quotes_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791419386246,
+      "tag": "0010_project_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791439180867,
+      "tag": "0011_lead_history_protection",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791439728766,
+      "tag": "0012_gt_defaults_paid_at",
+      "breakpoints": true
     }
   ]
 }

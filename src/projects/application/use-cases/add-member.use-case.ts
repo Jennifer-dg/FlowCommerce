@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Role } from '@flowcommerce/types';
+import { Permission, type Role } from '@flowcommerce/types';
 import {
   ConflictException,
   ForbiddenException,
@@ -8,6 +8,7 @@ import {
 import { USER_REPOSITORY } from '../../../users/domain/repositories/user.repository';
 import type { UserRepository } from '../../../users/domain/repositories/user.repository';
 import { canAssignRole } from '../../../authorization/domain/role.rules';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   MEMBERSHIP_REPOSITORY,
   type MembershipRepository,
@@ -24,14 +25,24 @@ export interface AddMemberInput {
 @Injectable()
 export class AddMemberUseCase {
   constructor(
+    private readonly authorizationService: AuthorizationService,
     @Inject(MEMBERSHIP_REPOSITORY)
     private readonly membershipRepository: MembershipRepository,
     @Inject(USER_REPOSITORY)
     private readonly userRepository: UserRepository,
   ) {}
 
-  // Agrega un miembro al proyecto, validando que el rol del actor pueda asignarlo.
+  // Agrega un miembro al proyecto. Primero exige MEMBER_INVITE (defensa en
+  // profundidad: no depende de que el controller tenga @RequirePermission) y
+  // después aplica la jerarquía: el rol del actor debe poder asignar el rol
+  // pedido.
   async execute(input: AddMemberInput): Promise<ProjectMember> {
+    await this.authorizationService.assertCan(
+      input.actorUserId,
+      Permission.MEMBER_INVITE,
+      input.projectId,
+    );
+
     const actorMembership =
       await this.membershipRepository.findByUserAndProject(
         input.actorUserId,

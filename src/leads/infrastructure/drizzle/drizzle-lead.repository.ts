@@ -1,21 +1,58 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, count, eq, ilike, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { Database } from '../../../db';
 import { DATABASE_CLIENT } from '../../../db/database.constants';
-import { leads, type LeadRow } from '../../../db/schema';
-import { LeadEntity } from '../../domain/entities/lead.entity';
+import {
+  clients,
+  leads,
+  messages,
+  quotes,
+  type LeadRow,
+} from '../../../db/schema';
+import { isForeignKeyViolation } from '../../../common/utils/postgres-error';
+import { LeadEntity, type RefSummary } from '../../domain/entities/lead.entity';
 import type {
   CreateLeadInput,
+  DeleteLeadResult,
   LeadRepository,
   ListLeadsFilter,
   PaginatedLeads,
   UpdateLeadInput,
 } from '../../domain/repositories/lead.repository';
+import type { LeadStage } from '@flowcommerce/types';
 
 // Límite duro por página. El DTO de presentación ya valida @Max(100), pero el
 // repositorio se defiende por si algún llamante interno lo invoca sin DTO.
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 20;
+
+// Resúmenes {id, name} que acompañan al lead en las lecturas.
+const WITH_REFS = {
+  assignedUser: { columns: { id: true, name: true } },
+  client: { columns: { id: true, name: true } },
+  interestProduct: { columns: { id: true, name: true } },
+} as const;
+
+type LeadRowWithRefs = LeadRow & {
+  assignedUser?: RefSummary | null;
+  client?: RefSummary | null;
+  interestProduct?: RefSummary | null;
+};
 
 @Injectable()
 export class DrizzleLeadRepository implements LeadRepository {
@@ -31,6 +68,7 @@ export class DrizzleLeadRepository implements LeadRepository {
   ): Promise<LeadEntity | null> {
     const row = await this.db.query.leads.findFirst({
       where: and(eq(leads.id, id), eq(leads.projectId, projectId)),
+      with: WITH_REFS,
     });
 
     return row ? this.mapToEntity(row) : null;
@@ -67,20 +105,41 @@ export class DrizzleLeadRepository implements LeadRepository {
       conditions.push(eq(leads.stage, filter.stage));
     }
 
+    if (filter.stages && filter.stages.length > 0) {
+      conditions.push(inArray(leads.stage, filter.stages));
+    }
+
+    if (filter.assignedUserId) {
+      conditions.push(eq(leads.assignedUserId, filter.assignedUserId));
+    }
+
+    if (filter.source) {
+      conditions.push(eq(leads.source, filter.source));
+    }
+
+    if (filter.clientId) {
+      conditions.push(eq(leads.clientId, filter.clientId));
+    }
+
+    if (filter.createdFrom) {
+      conditions.push(gte(leads.createdAt, filter.createdFrom));
+    }
+
+    if (filter.createdTo) {
+      conditions.push(lt(leads.createdAt, filter.createdTo));
+    }
+
     if (filter.search) {
-      // ILIKE cubre mayúsculas y minúsculas, que es lo que espera un usuario al
-      // buscar "ana" y encontrar "Ana". El comodín se aplica a los tres campos
-      // de contacto y se escapan los %, para que un usuario pueda buscar
-      // literalmente un "%" sin que se convierta en comodín.
+      // ILIKE cubre mayúsculas y minúsculas. Se escapan los comodines para que
+      // un usuario pueda buscar literalmente un "%".
       const pattern = `%${this.escapeLikePattern(filter.search)}%`;
       const searchCondition = or(
         ilike(leads.name, pattern),
         ilike(leads.email, pattern),
         ilike(leads.phone, pattern),
+        ilike(leads.company, pattern),
       );
 
-      // or() devuelve undefined si no recibe condiciones; aquí siempre recibe
-      // tres, pero el tipo lo marca como opcional y no conviene fuerzar con !.
       if (searchCondition) {
         conditions.push(searchCondition);
       }
@@ -89,8 +148,7 @@ export class DrizzleLeadRepository implements LeadRepository {
     const where = and(...conditions);
 
     // El total se cuenta con el MISMO where que las filas, incluido el
-    // project_id. Contar sin projectId filtrado devolvería el número de filas de
-    // todos los tenants, que es una fuga de metadatos.
+    // project_id: contar sin él filtraría metadatos de otros tenants.
     const [totalRow] = await this.db
       .select({ value: count() })
       .from(leads)
@@ -104,7 +162,8 @@ export class DrizzleLeadRepository implements LeadRepository {
 
     const rows = await this.db.query.leads.findMany({
       where,
-      orderBy: (lead) => [asc(lead.createdAt), asc(lead.name)],
+      with: WITH_REFS,
+      orderBy: this.orderBy(filter),
       limit,
       offset: (page - 1) * limit,
     });
@@ -116,6 +175,7 @@ export class DrizzleLeadRepository implements LeadRepository {
   }
 
   // El projectId viene del contexto autorizado (nunca del body del cliente).
+  // clientId e interestProductId los ata al proyecto la FK compuesta.
   async create(input: CreateLeadInput): Promise<LeadEntity> {
     const [row] = await this.db
       .insert(leads)
@@ -126,10 +186,21 @@ export class DrizzleLeadRepository implements LeadRepository {
         phone: input.phone,
         stage: input.stage,
         score: input.score,
+        company: input.company,
+        source: input.source,
+        estimatedValue: input.estimatedValue,
+        notes: input.notes,
+        assignedUserId: input.assignedUserId,
+        clientId: input.clientId,
+        interestProductId: input.interestProductId,
+        lastContactAt: input.lastContactAt,
       })
       .returning();
 
-    return this.mapToEntity(row);
+    return (
+      (await this.findByIdInProject(row.id, input.projectId)) ??
+      this.mapToEntity(row)
+    );
   }
 
   // El projectId está en el WHERE del UPDATE, no solo en el input: así el
@@ -142,43 +213,163 @@ export class DrizzleLeadRepository implements LeadRepository {
   ): Promise<LeadEntity | null> {
     const changes = this.toColumnPatch(input);
 
-    if (Object.keys(changes).length === 0) {
-      // Nada que actualizar. Se devuelve el lead actual para no inventar un 404
-      // por una petición que en realidad era válida.
-      return this.findByIdInProject(id, projectId);
+    if (Object.keys(changes).length > 0) {
+      const updated = await this.db
+        .update(leads)
+        .set(changes)
+        .where(and(eq(leads.id, id), eq(leads.projectId, projectId)))
+        .returning({ id: leads.id });
+
+      if (updated.length === 0) {
+        return null;
+      }
     }
 
-    const [row] = await this.db
-      .update(leads)
-      .set(changes)
-      .where(and(eq(leads.id, id), eq(leads.projectId, projectId)))
-      .returning();
-
-    return row ? this.mapToEntity(row) : null;
+    return this.findByIdInProject(id, projectId);
   }
 
-  // El projectId está en el WHERE del DELETE. false significa "no había nada que
-  // borrar en ESTE proyecto", que el use-case convierte en 404 indistinguible.
-  async deleteInProject(id: string, projectId: string): Promise<boolean> {
-    const deleted = await this.db
-      .delete(leads)
-      .where(and(eq(leads.id, id), eq(leads.projectId, projectId)))
+  async linkClientInProject(
+    id: string,
+    projectId: string,
+    clientId: string,
+    stage?: LeadStage,
+  ): Promise<LeadEntity | null> {
+    const updated = await this.db
+      .update(leads)
+      .set({ clientId, ...(stage ? { stage } : {}) })
+      .where(
+        and(
+          eq(leads.id, id),
+          eq(leads.projectId, projectId),
+          isNull(leads.clientId),
+        ),
+      )
       .returning({ id: leads.id });
 
-    return deleted.length > 0;
+    if (updated.length === 0) {
+      return null;
+    }
+
+    return this.findByIdInProject(id, projectId);
+  }
+
+  // Borrado atómico y protegido (ver LeadRepository.deleteInProject). El
+  // projectId está en el WHERE del DELETE.
+  async deleteInProject(
+    id: string,
+    projectId: string,
+  ): Promise<DeleteLeadResult> {
+    // Las guardas viajan en el MISMO DELETE: no hay hueco entre comprobar y
+    // borrar. Cuentan como historial: cotizaciones fuera de DRAFT, mensajes
+    // (registro de auditoría) y haber originado un cliente (conversión).
+    let deleted: { id: string }[];
+    try {
+      deleted = await this.db
+        .delete(leads)
+        .where(
+          and(
+            eq(leads.id, id),
+            eq(leads.projectId, projectId),
+            notExists(
+              this.db
+                .select({ one: sql`1` })
+                .from(quotes)
+                .where(
+                  and(
+                    eq(quotes.leadId, leads.id),
+                    eq(quotes.projectId, leads.projectId),
+                    ne(quotes.status, 'DRAFT'),
+                  ),
+                ),
+            ),
+            notExists(
+              this.db
+                .select({ one: sql`1` })
+                .from(messages)
+                .where(
+                  and(
+                    eq(messages.leadId, leads.id),
+                    eq(messages.projectId, leads.projectId),
+                  ),
+                ),
+            ),
+            notExists(
+              this.db
+                .select({ one: sql`1` })
+                .from(clients)
+                .where(
+                  and(
+                    eq(clients.sourceLeadId, leads.id),
+                    eq(clients.projectId, leads.projectId),
+                  ),
+                ),
+            ),
+          ),
+        )
+        .returning({ id: leads.id });
+    } catch (error) {
+      // Red de seguridad de la base: si una carrera (p. ej. un mensaje que
+      // llega mientras corre el DELETE) viola una FK NO ACTION, no se borra
+      // nada y se responde como "tiene historial".
+      if (isForeignKeyViolation(error)) {
+        return 'HAS_HISTORY';
+      }
+      throw error;
+    }
+
+    if (deleted.length > 0) {
+      return 'DELETED';
+    }
+
+    const existing = await this.db.query.leads.findFirst({
+      where: and(eq(leads.id, id), eq(leads.projectId, projectId)),
+      columns: { id: true },
+    });
+    return existing ? 'HAS_HISTORY' : 'NOT_FOUND';
+  }
+
+  // Orden pedido + id como desempate (paginación estable). Los valores nulos
+  // (sin valor estimado, sin último contacto) van siempre al final.
+  private orderBy(filter: ListLeadsFilter): SQL[] {
+    if (!filter.sortBy) {
+      return [asc(leads.createdAt), asc(leads.name), asc(leads.id)];
+    }
+
+    const column = {
+      createdAt: leads.createdAt,
+      updatedAt: leads.updatedAt,
+      name: leads.name,
+      estimatedValue: leads.estimatedValue,
+      lastContactAt: leads.lastContactAt,
+    }[filter.sortBy];
+    const direction = filter.order === 'desc' ? sql`desc` : sql`asc`;
+
+    return [sql`${column} ${direction} nulls last`, asc(leads.id)];
   }
 
   // Traduce el input opcional del dominio a un patch de columnas. Se descartan
   // las claves con valor undefined para no sobrescribir con NULL; un null
-  // explícito sí se escribe, que es como se borra un email o un teléfono.
+  // explícito sí se escribe, que es como se borra un campo.
   private toColumnPatch(input: UpdateLeadInput) {
-    const changes: Record<string, unknown> = {};
+    const changes: Partial<typeof leads.$inferInsert> = {};
 
     if (input.name !== undefined) changes.name = input.name;
     if (input.email !== undefined) changes.email = input.email;
     if (input.phone !== undefined) changes.phone = input.phone;
     if (input.stage !== undefined) changes.stage = input.stage;
     if (input.score !== undefined) changes.score = input.score;
+    if (input.company !== undefined) changes.company = input.company;
+    if (input.source !== undefined) changes.source = input.source;
+    if (input.estimatedValue !== undefined)
+      changes.estimatedValue = input.estimatedValue;
+    if (input.notes !== undefined) changes.notes = input.notes;
+    if (input.assignedUserId !== undefined)
+      changes.assignedUserId = input.assignedUserId;
+    if (input.clientId !== undefined) changes.clientId = input.clientId;
+    if (input.interestProductId !== undefined)
+      changes.interestProductId = input.interestProductId;
+    if (input.lastContactAt !== undefined)
+      changes.lastContactAt = input.lastContactAt;
 
     return changes;
   }
@@ -189,17 +380,28 @@ export class DrizzleLeadRepository implements LeadRepository {
     return value.replace(/[\\%_]/g, (char) => `\\${char}`);
   }
 
-  private mapToEntity(row: LeadRow): LeadEntity {
-    return new LeadEntity(
-      row.id,
-      row.projectId,
-      row.name,
-      row.email,
-      row.phone,
-      row.stage,
-      row.score,
-      row.createdAt,
-      row.updatedAt,
-    );
+  private mapToEntity(row: LeadRowWithRefs): LeadEntity {
+    return new LeadEntity({
+      id: row.id,
+      projectId: row.projectId,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      stage: row.stage,
+      score: row.score,
+      company: row.company,
+      source: row.source,
+      estimatedValue: row.estimatedValue,
+      notes: row.notes,
+      assignedUserId: row.assignedUserId,
+      clientId: row.clientId,
+      interestProductId: row.interestProductId,
+      lastContactAt: row.lastContactAt,
+      creadoEn: row.createdAt,
+      actualizadoEn: row.updatedAt,
+      assignedUser: row.assignedUser ?? null,
+      client: row.client ?? null,
+      interestProduct: row.interestProduct ?? null,
+    });
   }
 }

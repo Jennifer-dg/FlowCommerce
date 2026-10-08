@@ -1,466 +1,401 @@
-import {
-  INestApplication,
-  ValidationPipe,
-  VersioningType,
-} from '@nestjs/common';
-import { Test, TestingModule } from '@nestjs/testing';
-import { and, eq, inArray } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import request from 'supertest';
-import { App } from 'supertest/types';
-import { randomUUID } from 'node:crypto';
-import { AppModule } from '../src/app.module';
-import { GlobalExceptionFilter } from '../src/common/filters/global-exception.filter';
-import type { Database } from '../src/db';
-import { DATABASE_CLIENT } from '../src/db/database.constants';
-import { leads, memberships, projects, quotes, users } from '../src/db/schema';
-import { SESSION_MANAGER } from '../src/auth/application/ports/session-manager';
+import { quotes } from '../src/db/schema';
+import {
+  createE2eApp,
+  type E2eContext,
+  type Role,
+  type SeededTenants,
+} from './support/e2e-app';
 
+interface QuoteBody {
+  id: string;
+  status: string;
+  folio: string;
+  total: number;
+  leadId: string;
+  lead: { id: string; name: string } | null;
+  client: { id: string; name: string } | null;
+  items: { productId: string; unitPrice: number; lineTotal: number }[];
+}
+
+interface ListBody {
+  data: QuoteBody[];
+  meta: { page: number; limit: number; total: number; totalPages: number };
+}
+
+// CRUD, listado (filtros, orden, paginación) y aislamiento entre tenants. El
+// ciclo de vida y los cálculos están en quotes-lifecycle.e2e-spec.ts.
 describe('Quotes (e2e)', () => {
-  let app: INestApplication<App>;
-  let db: Database;
+  let ctx: E2eContext;
+  let seed: SeededTenants;
+  let leadA: string;
+  let leadB: string;
+  let productA: string;
+  let productB: string;
+  let clientA: string;
 
-  // Subconjunto de la respuesta que usan las aserciones.
-  interface QuoteBody {
-    id: string;
-    status: string;
-    total: number;
-    folio: string;
-  }
+  const http = () => request(ctx.app.getHttpServer());
+  const as = (key: string, role: Role) => ctx.cookie(seed.user(key, role));
+  const base = (key = 'A') => `/api/v1/projects/${seed.project(key)}`;
 
-  const now = new Date();
-  const future = new Date(now.getTime() + 60_000);
+  const post = async (url: string, key: string, body: object, role: Role) =>
+    (
+      await http()
+        .post(`${base(key)}${url}`)
+        .set('Cookie', as(key, role))
+        .send(body)
+        .expect(201)
+    ).body as { id: string };
 
-  const ownerA = randomUUID();
-  const memberA = randomUUID();
-  const ownerB = randomUUID();
-
-  const projectA = randomUUID();
-  const projectB = randomUUID();
-
-  const leadA = randomUUID();
-  const leadB = randomUUID();
-
-  const userOf = (id: string) => ({
-    id,
-    name: 'Seed User',
-    email: `quote-${id}@flowcommerce.test`,
-  });
-
-  const sessionManager = {
-    signUp: jest.fn(),
-    signIn: jest.fn(),
-    getSession: jest.fn(),
-    signOut: jest.fn(),
-  };
-
-  const cookie = (userId: string) =>
-    `flowcommerce.session_token=user.${userId}`;
+  const createQuote = async (body: object, key = 'A', role: Role = 'OWNER') =>
+    (
+      await http()
+        .post(`${base(key)}/quotes`)
+        .set('Cookie', as(key, role))
+        .send(body)
+        .expect(201)
+    ).body as QuoteBody;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SESSION_MANAGER)
-      .useValue(sessionManager)
-      .compile();
-
-    app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.enableVersioning({
-      type: VersioningType.URI,
-      defaultVersion: '1',
-    });
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-        transformOptions: { enableImplicitConversion: true },
-      }),
-    );
-    app.useGlobalFilters(new GlobalExceptionFilter());
-    await app.init();
-
-    sessionManager.getSession.mockImplementation((headers: Headers) => {
-      const value = headers.get('cookie') ?? '';
-      const match = /user\.([0-9a-f-]{36})/i.exec(value);
-      const userId = match?.[1];
-      if (!userId) {
-        return Promise.resolve(null);
-      }
-      return Promise.resolve({
-        user: { ...userOf(userId), creadoEn: now, actualizadoEn: now },
-        session: {
-          id: `session-${userId}`,
-          userId,
-          expiresAt: future,
-        },
-      });
-    });
-
-    db = app.get(DATABASE_CLIENT);
-
-    await db.delete(quotes).where(eq(quotes.projectId, projectA));
-    await db.delete(quotes).where(eq(quotes.projectId, projectB));
-    await db.delete(leads).where(inArray(leads.id, [leadA, leadB]));
-    await db
-      .delete(memberships)
-      .where(inArray(memberships.userId, [ownerA, memberA, ownerB]));
-    await db.delete(projects).where(inArray(projects.id, [projectA, projectB]));
-    await db.delete(users).where(inArray(users.id, [ownerA, memberA, ownerB]));
-
-    await db
-      .insert(users)
-      .values([userOf(ownerA), userOf(memberA), userOf(ownerB)]);
-
-    await db.insert(projects).values([
-      { id: projectA, name: 'Quotes A', slug: `qa-${ownerA}` },
-      { id: projectB, name: 'Quotes B', slug: `qb-${ownerB}` },
+    ctx = await createE2eApp();
+    seed = await ctx.seedTenants([
+      { key: 'A', members: { OWNER: 1, MEMBER: 1, VIEWER: 1 } },
+      { key: 'B', members: { OWNER: 1 } },
     ]);
-
-    await db.insert(memberships).values([
-      { id: randomUUID(), userId: ownerA, projectId: projectA, role: 'OWNER' },
-      {
-        id: randomUUID(),
-        userId: memberA,
-        projectId: projectA,
-        role: 'MEMBER',
-      },
-      { id: randomUUID(), userId: ownerB, projectId: projectB, role: 'OWNER' },
-    ]);
-
-    await db.insert(leads).values([
-      { id: leadA, projectId: projectA, name: 'Lead A' },
-      { id: leadB, projectId: projectB, name: 'Lead B' },
-    ]);
+    leadA = (await post('/leads', 'A', { name: 'Lead A' }, 'OWNER')).id;
+    leadB = (await post('/leads', 'B', { name: 'Lead B' }, 'OWNER')).id;
+    clientA = (await post('/clients', 'A', { name: 'Cliente A' }, 'OWNER')).id;
+    productA = (
+      await post(
+        '/products',
+        'A',
+        { name: 'Licencia', price: 500, maxDiscountPercent: 10 },
+        'OWNER',
+      )
+    ).id;
+    productB = (
+      await post('/products', 'B', { name: 'Producto B', price: 10 }, 'OWNER')
+    ).id;
   });
 
   afterAll(async () => {
-    await db.delete(quotes).where(eq(quotes.projectId, projectA));
-    await db.delete(quotes).where(eq(quotes.projectId, projectB));
-    await db.delete(leads).where(inArray(leads.id, [leadA, leadB]));
-    await db
-      .delete(memberships)
-      .where(inArray(memberships.userId, [ownerA, memberA, ownerB]));
-    await db.delete(projects).where(inArray(projects.id, [projectA, projectB]));
-    await db.delete(users).where(inArray(users.id, [ownerA, memberA, ownerB]));
-    await app.close();
+    await seed.cleanup();
+    await ctx.close();
   });
 
-  // Crea una cotización vía HTTP y devuelve sus campos tipados.
-  const createQuote = async (body: Record<string, unknown>, as = ownerA) => {
-    const response = await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectA}/quotes`)
-      .set('Cookie', cookie(as))
-      .send(body)
-      .expect(201);
-
-    return response.body as QuoteBody;
-  };
-
-  // Igual, pero en un proyecto arbitrario. supertest tipa `body` como `any`, así
-  // que sin esta conversión cada `.body.id` dispara no-unsafe-member-access.
-  const createQuoteIn = async (
-    projectId: string,
-    body: Record<string, unknown>,
-    as: string,
-  ) => {
-    const response = await request(app.getHttpServer())
-      .post(`/api/v1/projects/${projectId}/quotes`)
-      .set('Cookie', cookie(as))
-      .send(body)
-      .expect(201);
-
-    return response.body as QuoteBody;
-  };
-
   describe('create', () => {
-    it('creates a DRAFT quote and recomputes the total', async () => {
+    it('creates a DRAFT with catalog price, lead summary and a folio', async () => {
       const quote = await createQuote({
         leadId: leadA,
-        folio: 'COT-1',
-        subtotal: 1000,
-        tax: 160,
+        clientId: clientA,
+        items: [{ productId: productA, quantity: 2 }],
       });
 
       expect(quote.status).toBe('DRAFT');
-      expect(quote.total).toBe(1160);
+      expect(quote.folio).toMatch(/^COT-\d{6}$/);
+      expect(quote.lead).toEqual({ id: leadA, name: 'Lead A' });
+      expect(quote.client).toEqual({ id: clientA, name: 'Cliente A' });
+      expect(quote.items).toHaveLength(1);
+      expect(quote.items[0]).toMatchObject({
+        productId: productA,
+        unitPrice: 500,
+        lineTotal: 1000,
+      });
     });
 
-    it('ignores a client-supplied status or total', async () => {
-      // forbidNonWhitelisted está activo: mandar status o total debe fallar, no
-      // ignorarse en silencio. La garantía de que el total no se manipula la
-      // da el use-case, y esto demuestra que el body ni siquiera los admite.
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/quotes`)
-        .set('Cookie', cookie(ownerA))
-        .send({
-          leadId: leadA,
-          folio: 'COT-2',
-          subtotal: 1000,
-          tax: 160,
-          status: 'APPROVED',
-        })
-        .expect(400);
-
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/quotes`)
-        .set('Cookie', cookie(ownerA))
-        .send({
-          leadId: leadA,
-          folio: 'COT-3',
-          subtotal: 1000,
-          tax: 160,
-          total: 1,
-        })
-        .expect(400);
-    });
-
-    it('refuses to hang a quote off a lead of another project', async () => {
-      // Sin la comprobación del use-case, la FK compuesta rechazaría la
-      // inserción con un 500. Se espera un 404 limpio e indistinguible.
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/quotes`)
-        .set('Cookie', cookie(ownerA))
-        .send({ leadId: leadB, folio: 'COT-X', subtotal: 10, tax: 1 })
-        .expect(404);
-
-      const rows = await db
-        .select({ folio: quotes.folio })
-        .from(quotes)
-        .where(eq(quotes.folio, 'COT-X'));
-      expect(rows).toHaveLength(0);
-    });
-
-    it('returns 409 for a duplicate folio inside the same project', async () => {
-      await createQuote({ leadId: leadA, folio: 'DUP', subtotal: 10, tax: 1 });
-
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/quotes`)
-        .set('Cookie', cookie(ownerA))
-        .send({ leadId: leadA, folio: 'DUP', subtotal: 10, tax: 1 })
-        .expect(409);
-    });
-
-    it('allows the same folio in a different project', async () => {
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectB}/quotes`)
-        .set('Cookie', cookie(ownerB))
-        .send({ leadId: leadB, folio: 'DUP', subtotal: 10, tax: 1 })
-        .expect(201);
-    });
-
-    it('rejects negative amounts', async () => {
-      await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/quotes`)
-        .set('Cookie', cookie(ownerA))
-        .send({ leadId: leadA, folio: 'NEG', subtotal: -5, tax: 0 })
-        .expect(400);
-    });
-  });
-
-  describe('read', () => {
-    it('lists and paginates quotes of the tenant', async () => {
-      // Se crean 3 garantías para que la primera página (limit=2) no coincida
-      // con el total y la paginación sea comprobable de verdad.
-      for (const folio of ['PAGE-1', 'PAGE-2', 'PAGE-3']) {
-        await createQuote({ leadId: leadA, folio, subtotal: 10, tax: 1 });
+    it('rejects client-supplied folio, status, total and prices', async () => {
+      for (const extra of [
+        { folio: 'MINE' },
+        { status: 'APPROVED' },
+        { total: 1 },
+        { subtotal: 1, tax: 1 },
+      ]) {
+        await http()
+          .post(`${base()}/quotes`)
+          .set('Cookie', as('A', 'OWNER'))
+          .send({ leadId: leadA, ...extra })
+          .expect(400);
       }
 
-      const response = await request(app.getHttpServer())
-        .get(`/api/v1/projects/${projectA}/quotes?page=1&limit=2`)
-        .set('Cookie', cookie(ownerA))
-        .expect(200);
-
-      const body = response.body as {
-        data: { folio: string }[];
-        meta: { limit: number; total: number; totalPages: number };
-      };
-      expect(body.data).toHaveLength(2);
-      expect(body.meta.limit).toBe(2);
-      // El total cuenta TODAS las filas del tenant, no solo las de la página.
-      expect(body.meta.total).toBeGreaterThan(2);
-      expect(body.meta.totalPages).toBe(Math.ceil(body.meta.total / 2));
-
-      // La segunda página trae filas distintas, no una repetición.
-      const second = await request(app.getHttpServer())
-        .get(`/api/v1/projects/${projectA}/quotes?page=2&limit=2`)
-        .set('Cookie', cookie(ownerA))
-        .expect(200);
-
-      const secondBody = second.body as {
-        data: { id: string; folio: string }[];
-      };
-      const firstFolios = new Set(body.data.map((quote) => quote.folio));
-      const overlap = secondBody.data.filter((quote) =>
-        firstFolios.has(quote.folio),
-      );
-      expect(overlap).toHaveLength(0);
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({
+          leadId: leadA,
+          items: [{ productId: productA, quantity: 1, unitPrice: 1 }],
+        })
+        .expect(400);
     });
 
-    it('filters by status', async () => {
-      const response = await request(app.getHttpServer())
-        .get(`/api/v1/projects/${projectA}/quotes?status=DRAFT`)
-        .set('Cookie', cookie(ownerA))
-        .expect(200);
+    it('refuses a lead, client or product of another project with 404', async () => {
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({ leadId: leadB })
+        .expect(404);
 
-      const body = response.body as { data: { status: string }[] };
-      expect(body.data.every((quote) => quote.status === 'DRAFT')).toBe(true);
+      await http()
+        .post(`${base('B')}/quotes`)
+        .set('Cookie', as('B', 'OWNER'))
+        .send({ leadId: leadB, clientId: clientA })
+        .expect(404);
+
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({
+          leadId: leadA,
+          items: [{ productId: productB, quantity: 1 }],
+        })
+        .expect(404);
     });
 
-    it('returns 404 for a quote of another tenant', async () => {
-      const foreign = await createQuoteIn(
-        projectB,
-        { leadId: leadB, folio: 'B-1', subtotal: 10, tax: 1 },
-        ownerB,
-      );
+    it('forbids VIEWER from creating quotes', async () => {
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'VIEWER'))
+        .send({ leadId: leadA })
+        .expect(403);
+    });
 
-      await request(app.getHttpServer())
-        .get(`/api/v1/projects/${projectA}/quotes/${foreign.id}`)
-        .set('Cookie', cookie(ownerA))
+    it('rejects a quantity of zero or a discount above 100', async () => {
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({ leadId: leadA, items: [{ productId: productA, quantity: 0 }] })
+        .expect(400);
+
+      await http()
+        .post(`${base()}/quotes`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({
+          leadId: leadA,
+          items: [{ productId: productA, quantity: 1, discountPercent: 101 }],
+        })
+        .expect(400);
+    });
+  });
+
+  describe('list', () => {
+    let q1: QuoteBody;
+    let q2: QuoteBody;
+    let q3: QuoteBody;
+
+    beforeAll(async () => {
+      q1 = await createQuote({
+        leadId: leadA,
+        items: [{ productId: productA, quantity: 1 }],
+      });
+      q2 = await createQuote({
+        leadId: leadA,
+        clientId: clientA,
+        items: [{ productId: productA, quantity: 5 }],
+      });
+      q3 = await createQuote({
+        leadId: leadA,
+        items: [{ productId: productA, quantity: 3 }],
+      });
+    });
+
+    // Siempre como VIEWER del tenant A: leer solo exige QUOTE_READ.
+    const list = async (query: string) =>
+      (
+        await http()
+          .get(`${base()}/quotes?${query}`)
+          .set('Cookie', as('A', 'VIEWER'))
+          .expect(200)
+      ).body as ListBody;
+
+    it('includes lead and client summaries, readable by VIEWER', async () => {
+      const body = await list('limit=100');
+      const row = body.data.find((quote) => quote.id === q2.id);
+      expect(row?.lead).toEqual({ id: leadA, name: 'Lead A' });
+      expect(row?.client).toEqual({ id: clientA, name: 'Cliente A' });
+    });
+
+    it('searches by folio', async () => {
+      const body = await list(`search=${q1.folio}`);
+      expect(body.data.map((quote) => quote.id)).toEqual([q1.id]);
+    });
+
+    it('treats LIKE wildcards in the search literally', async () => {
+      const body = await list('search=%25');
+      expect(body.data).toEqual([]);
+    });
+
+    it('filters by clientId, leadId and status', async () => {
+      const byClient = (await list(`clientId=${clientA}`)).data;
+      expect(byClient.map((quote) => quote.id)).toContain(q2.id);
+      expect(byClient.every((quote) => quote.client?.id === clientA)).toBe(
+        true,
+      );
+      expect(byClient.map((quote) => quote.id)).not.toContain(q1.id);
+      expect((await list(`leadId=${leadA}&limit=100`)).meta.total).toBe(
+        (await list('limit=100')).meta.total,
+      );
+      expect((await list('status=APPROVED')).data).toEqual([]);
+    });
+
+    it('filters by creation date range', async () => {
+      expect((await list('createdFrom=2999-01-01T00:00:00Z')).data).toEqual([]);
+      expect((await list('createdTo=2000-01-01T00:00:00Z')).meta.total).toBe(0);
+      expect(
+        (await list('createdFrom=2000-01-01T00:00:00Z')).meta.total,
+      ).toBeGreaterThanOrEqual(3);
+    });
+
+    it('sorts by total and by folio in both directions', async () => {
+      const byTotalDesc = (await list('sortBy=total&order=desc&limit=100'))
+        .data;
+      const totals = byTotalDesc.map((quote) => quote.total);
+      expect(totals).toEqual([...totals].sort((a, b) => b - a));
+
+      const byFolioAsc = (await list('sortBy=folio&order=asc&limit=100')).data;
+      const folios = byFolioAsc.map((quote) => quote.folio);
+      expect(folios).toEqual([...folios].sort());
+      expect(folios).toEqual(expect.arrayContaining([q1.folio, q3.folio]));
+    });
+
+    it('rejects an unknown sort field', async () => {
+      await http()
+        .get(`${base()}/quotes?sortBy=password`)
+        .set('Cookie', as('A', 'OWNER'))
+        .expect(400);
+    });
+
+    it('paginates with distinct rows per page', async () => {
+      const first = await list('page=1&limit=2');
+      const second = await list('page=2&limit=2');
+      expect(first.data).toHaveLength(2);
+      expect(first.meta.total).toBeGreaterThanOrEqual(3);
+      expect(first.meta.totalPages).toBe(Math.ceil(first.meta.total / 2));
+      const firstIds = new Set(first.data.map((quote) => quote.id));
+      expect(second.data.some((quote) => firstIds.has(quote.id))).toBe(false);
+    });
+
+    it('never leaks quotes across tenants', async () => {
+      const foreign = await createQuote({ leadId: leadB }, 'B');
+
+      const own = await list('limit=100');
+      expect(own.data.some((quote) => quote.id === foreign.id)).toBe(false);
+
+      // El filtro por un lead de otro tenant no amplía el alcance.
+      expect((await list(`leadId=${leadB}`)).data).toEqual([]);
+
+      await http()
+        .get(`${base()}/quotes/${foreign.id}`)
+        .set('Cookie', as('A', 'OWNER'))
         .expect(404);
     });
   });
 
-  describe('status lifecycle', () => {
-    it('walks DRAFT -> PENDING_APPROVAL -> APPROVED -> PAID', async () => {
-      const quote = await createQuote({
+  describe('detail, edit and delete', () => {
+    it('returns the detail with its items', async () => {
+      const created = await createQuote({
         leadId: leadA,
-        folio: 'LIFE-1',
-        subtotal: 100,
-        tax: 16,
+        items: [{ productId: productA, quantity: 4, description: 'Custom' }],
       });
 
-      const step = async (status: string, expectStatus: number) => {
-        const response = await request(app.getHttpServer())
-          .patch(`/api/v1/projects/${projectA}/quotes/${quote.id}/status`)
-          .set('Cookie', cookie(ownerA))
-          .send({ status })
-          .expect(expectStatus);
-        return response.body as { status: string };
-      };
+      const detail = (
+        await http()
+          .get(`${base()}/quotes/${created.id}`)
+          .set('Cookie', as('A', 'VIEWER'))
+          .expect(200)
+      ).body as QuoteBody & { items: { description: string }[] };
 
-      expect((await step('PENDING_APPROVAL', 200)).status).toBe(
-        'PENDING_APPROVAL',
-      );
-      expect((await step('APPROVED', 200)).status).toBe('APPROVED');
-      expect((await step('PAID', 200)).status).toBe('PAID');
-
-      // PAID es terminal: no hay salida.
-      await step('APPROVED', 409);
+      expect(detail.items).toHaveLength(1);
+      expect(detail.items[0].description).toBe('Custom');
     });
 
-    it('rejects skipping approval', async () => {
-      const quote = await createQuote({
+    it('edits a DRAFT and replaces its items', async () => {
+      const created = await createQuote({
         leadId: leadA,
-        folio: 'LIFE-2',
-        subtotal: 100,
-        tax: 16,
+        items: [{ productId: productA, quantity: 1 }],
       });
 
-      await request(app.getHttpServer())
-        .patch(`/api/v1/projects/${projectA}/quotes/${quote.id}/status`)
-        .set('Cookie', cookie(ownerA))
-        .send({ status: 'PAID' })
-        .expect(409);
+      const edited = (
+        await http()
+          .patch(`${base()}/quotes/${created.id}`)
+          .set('Cookie', as('A', 'MEMBER'))
+          .send({
+            notes: 'Actualizada',
+            items: [{ productId: productA, quantity: 2 }],
+          })
+          .expect(200)
+      ).body as QuoteBody;
 
-      const rows = await db
-        .select({ status: quotes.status })
-        .from(quotes)
-        .where(eq(quotes.id, quote.id));
-      expect(rows[0]?.status).toBe('DRAFT');
+      expect(edited.items).toHaveLength(1);
+      expect(edited.items[0].lineTotal).toBe(1000);
+      // 1000 + 12 % de IVA
+      expect(edited.total).toBe(1120);
     });
 
-    it('lets MEMBER request approval but not approve', async () => {
-      const quote = await createQuote({
-        leadId: leadA,
-        folio: 'LIFE-3',
-        subtotal: 100,
-        tax: 16,
-      });
+    it('forbids VIEWER from editing and deleting', async () => {
+      const created = await createQuote({ leadId: leadA });
 
-      // MEMBER sí mueve la cotización en su ciclo de trabajo.
-      await request(app.getHttpServer())
-        .patch(`/api/v1/projects/${projectA}/quotes/${quote.id}/status`)
-        .set('Cookie', cookie(memberA))
-        .send({ status: 'PENDING_APPROVAL' })
-        .expect(200);
-
-      // Pero aprobar es una decisión comercial: requiere QUOTE_APPROVE, que
-      // MEMBER no tiene. Aquí el 403 viene del use-case, no del guard.
-      await request(app.getHttpServer())
-        .patch(`/api/v1/projects/${projectA}/quotes/${quote.id}/status`)
-        .set('Cookie', cookie(memberA))
-        .send({ status: 'APPROVED' })
+      await http()
+        .patch(`${base()}/quotes/${created.id}`)
+        .set('Cookie', as('A', 'VIEWER'))
+        .send({ notes: 'x' })
         .expect(403);
-
-      const rows = await db
-        .select({ status: quotes.status })
-        .from(quotes)
-        .where(eq(quotes.id, quote.id));
-      expect(rows[0]?.status).toBe('PENDING_APPROVAL');
+      await http()
+        .delete(`${base()}/quotes/${created.id}`)
+        .set('Cookie', as('A', 'VIEWER'))
+        .expect(403);
     });
 
-    it('returns 404 and writes nothing for a quote of another tenant', async () => {
-      const foreign = await createQuoteIn(
-        projectB,
-        { leadId: leadB, folio: 'B-2', subtotal: 10, tax: 1 },
-        ownerB,
-      );
+    it('returns 404 when editing or deleting a quote of another tenant', async () => {
+      const foreign = await createQuote({ leadId: leadB }, 'B');
 
-      await request(app.getHttpServer())
-        .patch(`/api/v1/projects/${projectA}/quotes/${foreign.id}/status`)
-        .set('Cookie', cookie(ownerA))
-        .send({ status: 'PENDING_APPROVAL' })
+      await http()
+        .patch(`${base()}/quotes/${foreign.id}`)
+        .set('Cookie', as('A', 'OWNER'))
+        .send({ notes: 'x' })
+        .expect(404);
+      await http()
+        .delete(`${base()}/quotes/${foreign.id}`)
+        .set('Cookie', as('A', 'OWNER'))
         .expect(404);
 
-      const rows = await db
-        .select({ status: quotes.status })
+      const rows = await ctx.db
+        .select({ id: quotes.id })
         .from(quotes)
-        .where(and(eq(quotes.id, foreign.id), eq(quotes.projectId, projectB)));
-      expect(rows[0]?.status).toBe('DRAFT');
+        .where(eq(quotes.id, foreign.id));
+      expect(rows).toHaveLength(1);
     });
 
-    it('rejects an unknown status with 400', async () => {
-      const quote = await createQuote({
+    it('deletes a DRAFT together with its items', async () => {
+      const created = await createQuote({
         leadId: leadA,
-        folio: 'LIFE-4',
-        subtotal: 100,
-        tax: 16,
+        items: [{ productId: productA, quantity: 1 }],
       });
 
-      await request(app.getHttpServer())
-        .patch(`/api/v1/projects/${projectA}/quotes/${quote.id}/status`)
-        .set('Cookie', cookie(ownerA))
-        .send({ status: 'WHATEVER' })
-        .expect(400);
+      await http()
+        .delete(`${base()}/quotes/${created.id}`)
+        .set('Cookie', as('A', 'MEMBER'))
+        .expect(204);
+      await http()
+        .get(`${base()}/quotes/${created.id}`)
+        .set('Cookie', as('A', 'OWNER'))
+        .expect(404);
     });
   });
 
   describe('cascade', () => {
     it('deletes quotes when their lead is deleted', async () => {
-      const leadResponse = await request(app.getHttpServer())
-        .post(`/api/v1/projects/${projectA}/leads`)
-        .set('Cookie', cookie(ownerA))
-        .send({ name: 'Cascade lead' })
-        .expect(201);
-      const leadIdForCascade = (leadResponse.body as { id: string }).id;
-
+      const lead = await post('/leads', 'A', { name: 'Cascade lead' }, 'OWNER');
       const quote = await createQuote({
-        leadId: leadIdForCascade,
-        folio: 'CASCADE-1',
-        subtotal: 50,
-        tax: 5,
+        leadId: lead.id,
+        items: [{ productId: productA, quantity: 1 }],
       });
 
-      await request(app.getHttpServer())
-        .delete(`/api/v1/projects/${projectA}/leads/${leadIdForCascade}`)
-        .set('Cookie', cookie(ownerA))
+      await http()
+        .delete(`${base()}/leads/${lead.id}`)
+        .set('Cookie', as('A', 'OWNER'))
         .expect(204);
 
-      // La FK compuesta ON DELETE CASCADE se encarga: no queda ninguna
-      // cotización colgando de un lead que ya no existe.
-      const rows = await db
+      const rows = await ctx.db
         .select({ id: quotes.id })
         .from(quotes)
         .where(eq(quotes.id, quote.id));

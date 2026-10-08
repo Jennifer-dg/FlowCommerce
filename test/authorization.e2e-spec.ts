@@ -30,6 +30,13 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
   const memberA = randomUUID();
   const viewerA = randomUUID();
   const ownerB = randomUUID();
+  // VIEWER de B: objetivo de los intentos cross-tenant sobre memberships. No es
+  // OWNER para que la protección del último OWNER no enmascare el resultado.
+  const viewerB = randomUUID();
+
+  // Ids de membership fijos para poder atacarlos por id en los tests.
+  const viewerAMembership = randomUUID();
+  const viewerBMembership = randomUUID();
 
   const projectA = randomUUID();
   const projectB = randomUUID();
@@ -103,12 +110,21 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
     await db
       .delete(memberships)
       .where(
-        inArray(memberships.userId, [ownerA, adminA, memberA, viewerA, ownerB]),
+        inArray(memberships.userId, [
+          ownerA,
+          adminA,
+          memberA,
+          viewerA,
+          ownerB,
+          viewerB,
+        ]),
       );
     await db.delete(projects).where(inArray(projects.id, [projectA, projectB]));
     await db
       .delete(users)
-      .where(inArray(users.id, [ownerA, adminA, memberA, viewerA, ownerB]));
+      .where(
+        inArray(users.id, [ownerA, adminA, memberA, viewerA, ownerB, viewerB]),
+      );
 
     await db
       .insert(users)
@@ -118,6 +134,7 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
         userOf(memberA),
         userOf(viewerA),
         userOf(ownerB),
+        userOf(viewerB),
       ]);
 
     await db.insert(projects).values([
@@ -135,12 +152,18 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
         role: 'MEMBER',
       },
       {
-        id: randomUUID(),
+        id: viewerAMembership,
         userId: viewerA,
         projectId: projectA,
         role: 'VIEWER',
       },
       { id: randomUUID(), userId: ownerB, projectId: projectB, role: 'OWNER' },
+      {
+        id: viewerBMembership,
+        userId: viewerB,
+        projectId: projectB,
+        role: 'VIEWER',
+      },
     ]);
 
     await db.insert(leads).values([
@@ -166,12 +189,21 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
     await db
       .delete(memberships)
       .where(
-        inArray(memberships.userId, [ownerA, adminA, memberA, viewerA, ownerB]),
+        inArray(memberships.userId, [
+          ownerA,
+          adminA,
+          memberA,
+          viewerA,
+          ownerB,
+          viewerB,
+        ]),
       );
     await db.delete(projects).where(inArray(projects.id, [projectA, projectB]));
     await db
       .delete(users)
-      .where(inArray(users.id, [ownerA, adminA, memberA, viewerA, ownerB]));
+      .where(
+        inArray(users.id, [ownerA, adminA, memberA, viewerA, ownerB, viewerB]),
+      );
     await app.close();
   });
 
@@ -508,5 +540,90 @@ describe('Authorization & Multi-tenancy (e2e)', () => {
       .set('Cookie', cookie(viewerA))
       .send({ userId: randomUUID(), role: 'MEMBER' })
       .expect(403);
+  });
+
+  // ---------------------------------------------------------------------------
+  // 7. Members: a MEMBER cannot manage memberships (T2)
+  //
+  // Por jerarquía de roles un MEMBER SÍ podría gestionar a un VIEWER
+  // (canManageRole/canAssignRole). Lo que lo impide es el permiso:
+  // MEMBER_INVITE, MEMBER_UPDATE_ROLE y MEMBER_REMOVE son solo de OWNER/ADMIN.
+  // ---------------------------------------------------------------------------
+
+  const findMembership = async (id: string) => {
+    const [row] = await db
+      .select()
+      .from(memberships)
+      .where(eq(memberships.id, id));
+    return row;
+  };
+
+  it('forbids MEMBER from inviting a member, even with a lower role (403)', async () => {
+    await request(app.getHttpServer())
+      .post(`/api/v1/projects/${projectA}/members`)
+      .set('Cookie', cookie(memberA))
+      .send({ userId: viewerB, role: 'VIEWER' })
+      .expect(403);
+
+    const [created] = await db
+      .select()
+      .from(memberships)
+      .where(
+        and(
+          eq(memberships.userId, viewerB),
+          eq(memberships.projectId, projectA),
+        ),
+      );
+    expect(created).toBeUndefined();
+  });
+
+  it('forbids MEMBER from changing the role of a VIEWER (403)', async () => {
+    await request(app.getHttpServer())
+      .patch(`/api/v1/projects/${projectA}/members/${viewerAMembership}`)
+      .set('Cookie', cookie(memberA))
+      .send({ role: 'VIEWER' })
+      .expect(403);
+
+    expect((await findMembership(viewerAMembership))?.role).toBe('VIEWER');
+  });
+
+  it('forbids MEMBER from removing a VIEWER (403)', async () => {
+    await request(app.getHttpServer())
+      .delete(`/api/v1/projects/${projectA}/members/${viewerAMembership}`)
+      .set('Cookie', cookie(memberA))
+      .expect(403);
+
+    expect(await findMembership(viewerAMembership)).toBeDefined();
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8. Members: cross-tenant membershipId (T1)
+  //
+  // ownerA es OWNER de A (jerarquía máxima), así que solo el filtro
+  // `WHERE id = ? AND project_id = ?` impide tocar una membership de B usando
+  // la ruta de A. Debe responder 404 (como si no existiera) y B no cambia.
+  // ---------------------------------------------------------------------------
+
+  it('returns 404 when changing the role of a membership of another project', async () => {
+    await request(app.getHttpServer())
+      .patch(`/api/v1/projects/${projectA}/members/${viewerBMembership}`)
+      .set('Cookie', cookie(ownerA))
+      .send({ role: 'ADMIN' })
+      .expect(404);
+
+    const untouched = await findMembership(viewerBMembership);
+    expect(untouched?.projectId).toBe(projectB);
+    expect(untouched?.role).toBe('VIEWER');
+  });
+
+  it('returns 404 when removing a membership of another project', async () => {
+    await request(app.getHttpServer())
+      .delete(`/api/v1/projects/${projectA}/members/${viewerBMembership}`)
+      .set('Cookie', cookie(ownerA))
+      .expect(404);
+
+    const untouched = await findMembership(viewerBMembership);
+    expect(untouched?.projectId).toBe(projectB);
+    expect(untouched?.role).toBe('VIEWER');
   });
 });

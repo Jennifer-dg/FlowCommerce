@@ -10,6 +10,7 @@ import type {
   CreateProjectWithOwnerInput,
   CreateProjectWithOwnerResult,
   ProjectRepository,
+  UpdateProjectInput,
 } from '../../domain/repositories/project.repository';
 
 @Injectable()
@@ -46,6 +47,46 @@ export class DrizzleProjectRepository implements ProjectRepository {
       .returning();
 
     return this.mapToEntity(row);
+  }
+
+  async update(
+    id: string,
+    input: UpdateProjectInput,
+  ): Promise<ProjectEntity | null> {
+    const changes: Partial<typeof projects.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.name !== undefined) changes.name = input.name;
+    if (input.description !== undefined)
+      changes.description = input.description;
+
+    const { billing, quoteSettings } = input;
+    if (billing?.legalName !== undefined)
+      changes.billingLegalName = billing.legalName;
+    if (billing?.taxId !== undefined) changes.billingTaxId = billing.taxId;
+    if (billing?.address !== undefined)
+      changes.billingAddress = billing.address;
+    if (billing?.phone !== undefined) changes.billingPhone = billing.phone;
+    if (billing?.email !== undefined) changes.billingEmail = billing.email;
+
+    if (quoteSettings?.taxPercent !== undefined)
+      changes.quoteTaxPercent = quoteSettings.taxPercent;
+    if (quoteSettings?.folioPrefix !== undefined)
+      changes.quoteFolioPrefix = quoteSettings.folioPrefix;
+    if (quoteSettings?.validityDays !== undefined)
+      changes.quoteValidityDays = quoteSettings.validityDays;
+    if (quoteSettings?.defaultTerms !== undefined)
+      changes.quoteDefaultTerms = quoteSettings.defaultTerms;
+    if (quoteSettings?.currency !== undefined)
+      changes.currency = quoteSettings.currency;
+
+    const [row] = await this.db
+      .update(projects)
+      .set(changes)
+      .where(eq(projects.id, id))
+      .returning();
+
+    return row ? this.mapToEntity(row) : null;
   }
 
   // Crea el proyecto y su membresía OWNER dentro de una misma transacción,
@@ -94,6 +135,20 @@ export class DrizzleProjectRepository implements ProjectRepository {
       row.description,
       row.createdAt,
       row.updatedAt,
+      {
+        legalName: row.billingLegalName,
+        taxId: row.billingTaxId,
+        address: row.billingAddress,
+        phone: row.billingPhone,
+        email: row.billingEmail,
+      },
+      {
+        taxPercent: row.quoteTaxPercent,
+        folioPrefix: row.quoteFolioPrefix,
+        validityDays: row.quoteValidityDays,
+        defaultTerms: row.quoteDefaultTerms,
+        currency: row.currency,
+      },
     );
   }
 }

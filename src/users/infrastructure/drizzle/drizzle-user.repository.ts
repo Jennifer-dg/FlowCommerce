@@ -6,6 +6,7 @@ import { users, type UserRow } from '../../../db/schema';
 import { UserEntity } from '../../domain/entities/user.entity';
 import type {
   CreateUserInput,
+  UpdateUserProfileInput,
   UserRepository,
 } from '../../domain/repositories/user.repository';
 
@@ -54,6 +55,25 @@ export class DrizzleUserRepository implements UserRepository {
     return row !== undefined;
   }
 
+  async updateProfile(
+    id: string,
+    input: UpdateUserProfileInput,
+  ): Promise<UserEntity | null> {
+    const changes: Partial<typeof users.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.phone !== undefined) changes.phone = input.phone;
+    if (input.position !== undefined) changes.position = input.position;
+
+    const [row] = await this.db
+      .update(users)
+      .set(changes)
+      .where(eq(users.id, id))
+      .returning();
+
+    return row ? this.mapToEntity(row) : null;
+  }
+
   private mapToEntity(row: UserRow): UserEntity {
     return new UserEntity(
       row.id,
@@ -62,6 +82,8 @@ export class DrizzleUserRepository implements UserRepository {
       row.createdAt,
       row.updatedAt,
       row.emailVerified,
+      row.phone,
+      row.position,
     );
   }
 }

@@ -1,9 +1,14 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { Permission, type LeadStage } from '@flowcommerce/types';
+import {
+  Permission,
+  type LeadSource,
+  type LeadStage,
+} from '@flowcommerce/types';
 import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   LEADS_REPOSITORY,
   type LeadRepository,
+  type LeadSortField,
   type PaginatedLeads,
 } from '../../domain/repositories/lead.repository';
 
@@ -11,7 +16,15 @@ export interface ListLeadsInput {
   actorUserId: string;
   projectId: string;
   stage?: LeadStage;
+  stages?: LeadStage[];
   search?: string;
+  assignedUserId?: string;
+  source?: LeadSource;
+  clientId?: string;
+  createdFrom?: Date;
+  createdTo?: Date;
+  sortBy?: LeadSortField;
+  order?: 'asc' | 'desc';
   page?: number;
   limit?: number;
 }
@@ -36,7 +49,15 @@ export class ListLeadsUseCase {
 
     return this.leadRepository.listByProject(input.projectId, {
       stage: input.stage,
+      stages: input.stages,
       search: input.search,
+      assignedUserId: input.assignedUserId,
+      source: input.source,
+      clientId: input.clientId,
+      createdFrom: input.createdFrom,
+      createdTo: input.createdTo,
+      sortBy: input.sortBy,
+      order: input.order,
       page: input.page,
       limit: input.limit,
     });

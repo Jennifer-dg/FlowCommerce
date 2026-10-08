@@ -9,6 +9,7 @@ import type { SignInSessionInput } from '../../domain/session.types';
 export interface LoginInput {
   email: string;
   password: string;
+  rememberMe?: boolean;
 }
 
 export interface LoginResult {
@@ -36,6 +37,7 @@ export class LoginUseCase {
     const sessionInput: SignInSessionInput = {
       email: normalizeEmail(input.email),
       password: input.password,
+      rememberMe: input.rememberMe === true,
     };
 
     try {

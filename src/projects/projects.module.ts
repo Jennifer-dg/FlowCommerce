@@ -5,6 +5,8 @@ import { UsersModule } from '../users/users.module';
 import { AddMemberUseCase } from './application/use-cases/add-member.use-case';
 import { ChangeMemberRoleUseCase } from './application/use-cases/change-member-role.use-case';
 import { CreateProjectUseCase } from './application/use-cases/create-project.use-case';
+import { GetProjectUseCase } from './application/use-cases/get-project.use-case';
+import { UpdateProjectUseCase } from './application/use-cases/update-project.use-case';
 import { ListMyProjectsUseCase } from './application/use-cases/list-my-projects.use-case';
 import { ListProjectMembersUseCase } from './application/use-cases/list-project-members.use-case';
 import { RemoveMemberUseCase } from './application/use-cases/remove-member.use-case';
@@ -32,6 +34,8 @@ import { ProjectsController } from './presentation/controllers/projects.controll
     AddMemberUseCase,
     ChangeMemberRoleUseCase,
     RemoveMemberUseCase,
+    GetProjectUseCase,
+    UpdateProjectUseCase,
   ],
   exports: [PROJECT_REPOSITORY, MEMBERSHIP_REPOSITORY],
 })

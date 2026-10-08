@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { Role } from '@flowcommerce/types';
+import { Permission, type Role } from '@flowcommerce/types';
 import {
   ForbiddenException,
   NotFoundException,
@@ -8,6 +8,7 @@ import {
   canAssignRole,
   canManageRole,
 } from '../../../authorization/domain/role.rules';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   MEMBERSHIP_REPOSITORY,
   type MembershipRepository,
@@ -24,13 +25,23 @@ export interface ChangeMemberRoleInput {
 @Injectable()
 export class ChangeMemberRoleUseCase {
   constructor(
+    private readonly authorizationService: AuthorizationService,
     @Inject(MEMBERSHIP_REPOSITORY)
     private readonly membershipRepository: MembershipRepository,
   ) {}
 
   // Cambia el rol de un miembro respetando las reglas de jerarquía (canManageRole
   // / canAssignRole) y protegiendo al último OWNER del proyecto.
+  //
+  // Exige MEMBER_UPDATE_ROLE antes de nada (defensa en profundidad) y todas las
+  // lecturas/escrituras de la membership objetivo van acotadas por projectId.
   async execute(input: ChangeMemberRoleInput): Promise<ProjectMember> {
+    await this.authorizationService.assertCan(
+      input.actorUserId,
+      Permission.MEMBER_UPDATE_ROLE,
+      input.projectId,
+    );
+
     const actorMembership =
       await this.membershipRepository.findByUserAndProject(
         input.actorUserId,
@@ -41,11 +52,12 @@ export class ChangeMemberRoleUseCase {
       throw new ForbiddenException('You are not a member of this project');
     }
 
-    const targetMembership = await this.membershipRepository.findById(
+    const targetMembership = await this.membershipRepository.findByIdInProject(
       input.targetMembershipId,
+      input.projectId,
     );
 
-    if (!targetMembership || targetMembership.projectId !== input.projectId) {
+    if (!targetMembership) {
       throw new NotFoundException('Membership not found in this project');
     }
 
@@ -72,13 +84,19 @@ export class ChangeMemberRoleUseCase {
       }
     }
 
-    const updated = await this.membershipRepository.updateRole(
+    const updated = await this.membershipRepository.updateRoleInProject(
       input.targetMembershipId,
+      input.projectId,
       input.newRole,
     );
 
-    const member = await this.membershipRepository.findMemberById(
+    if (!updated) {
+      throw new NotFoundException('Membership not found in this project');
+    }
+
+    const member = await this.membershipRepository.findMemberByIdInProject(
       input.targetMembershipId,
+      input.projectId,
     );
 
     if (!member) {

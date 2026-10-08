@@ -53,12 +53,16 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<AuthResponseDto> {
     const { user, token } = await this.loginUseCase.execute(dto);
-    const cookie = await this.sessionCookieService.build(token);
+    // «Recordarme» → cookie con Max-Age; si no, cookie de sesión del navegador.
+    const cookie = await this.sessionCookieService.build(token, {
+      persistent: dto.rememberMe === true,
+    });
     res.cookie(cookie.name, cookie.value, {
       httpOnly: cookie.httpOnly,
       sameSite: cookie.sameSite,
       secure: cookie.secure,
       path: cookie.path,
+      ...(cookie.maxAge !== undefined ? { maxAge: cookie.maxAge } : {}),
     });
     return { user };
   }

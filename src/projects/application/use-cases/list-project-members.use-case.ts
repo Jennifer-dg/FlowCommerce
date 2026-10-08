@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { ForbiddenException } from '../../../common/exceptions/domain.exceptions';
+import { Permission } from '@flowcommerce/types';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   MEMBERSHIP_REPOSITORY,
   type MembershipRepository,
@@ -14,20 +15,20 @@ export interface ListProjectMembersInput {
 @Injectable()
 export class ListProjectMembersUseCase {
   constructor(
+    private readonly authorizationService: AuthorizationService,
     @Inject(MEMBERSHIP_REPOSITORY)
     private readonly membershipRepository: MembershipRepository,
   ) {}
 
-  // Devuelve los miembros del proyecto, exigiendo que el actor sea miembro.
+  // Devuelve los miembros del proyecto. assertCan(MEMBER_READ) ya implica que
+  // el actor es miembro (sin membresía no hay permiso), así que sustituye a la
+  // comprobación manual de membresía.
   async execute(input: ListProjectMembersInput): Promise<ProjectMember[]> {
-    const membership = await this.membershipRepository.findByUserAndProject(
+    await this.authorizationService.assertCan(
       input.actorUserId,
+      Permission.MEMBER_READ,
       input.projectId,
     );
-
-    if (!membership) {
-      throw new ForbiddenException('You are not a member of this project');
-    }
 
     return this.membershipRepository.findMembersByProject(input.projectId);
   }

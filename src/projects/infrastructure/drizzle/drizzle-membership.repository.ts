@@ -37,17 +37,25 @@ export class DrizzleMembershipRepository implements MembershipRepository {
     private readonly db: Database,
   ) {}
 
-  async findById(id: string): Promise<MembershipEntity | null> {
+  // El projectId va SIEMPRE en el WHERE: una membership de otro proyecto
+  // devuelve null, igual que una inexistente.
+  async findByIdInProject(
+    id: string,
+    projectId: string,
+  ): Promise<MembershipEntity | null> {
     const row = await this.db.query.memberships.findFirst({
-      where: eq(memberships.id, id),
+      where: and(eq(memberships.id, id), eq(memberships.projectId, projectId)),
     });
 
     return row ? this.mapToEntity(row) : null;
   }
 
-  async findMemberById(id: string): Promise<ProjectMember | null> {
+  async findMemberByIdInProject(
+    id: string,
+    projectId: string,
+  ): Promise<ProjectMember | null> {
     const row = await this.db.query.memberships.findFirst({
-      where: eq(memberships.id, id),
+      where: and(eq(memberships.id, id), eq(memberships.projectId, projectId)),
       with: {
         user: {
           columns: { name: true, email: true },
@@ -135,18 +143,31 @@ export class DrizzleMembershipRepository implements MembershipRepository {
     return this.mapToEntity(row);
   }
 
-  async updateRole(id: string, role: Role): Promise<MembershipEntity> {
+  // El projectId está en el WHERE del UPDATE: nunca alcanza una fila de otro
+  // proyecto. Sin fila afectada devuelve null.
+  async updateRoleInProject(
+    id: string,
+    projectId: string,
+    role: Role,
+  ): Promise<MembershipEntity | null> {
     const [row] = await this.db
       .update(memberships)
       .set({ role })
-      .where(eq(memberships.id, id))
+      .where(and(eq(memberships.id, id), eq(memberships.projectId, projectId)))
       .returning();
 
-    return this.mapToEntity(row);
+    return row ? this.mapToEntity(row) : null;
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.delete(memberships).where(eq(memberships.id, id));
+  // El projectId está en el WHERE del DELETE. false = no había nada que borrar
+  // en ese proyecto.
+  async deleteInProject(id: string, projectId: string): Promise<boolean> {
+    const deleted = await this.db
+      .delete(memberships)
+      .where(and(eq(memberships.id, id), eq(memberships.projectId, projectId)))
+      .returning({ id: memberships.id });
+
+    return deleted.length > 0;
   }
 
   // Cuenta los OWNER del proyecto; evita que se demote o elimine al último.

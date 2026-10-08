@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Permission } from '@flowcommerce/types';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   ConflictException,
   ForbiddenException,
@@ -11,15 +13,18 @@ import { AddMemberUseCase } from './add-member.use-case';
 describe('AddMemberUseCase', () => {
   let useCase: AddMemberUseCase;
   const membershipRepository = {
-    findById: jest.fn(),
-    findMemberById: jest.fn(),
+    findByIdInProject: jest.fn(),
+    findMemberByIdInProject: jest.fn(),
     findByUserAndProject: jest.fn(),
     findMembersByProject: jest.fn(),
     findMyProjects: jest.fn(),
     create: jest.fn(),
-    updateRole: jest.fn(),
-    delete: jest.fn(),
+    updateRoleInProject: jest.fn(),
+    deleteInProject: jest.fn(),
     countOwners: jest.fn(),
+  };
+  const authorizationService = {
+    assertCan: jest.fn(),
   };
   const userRepository = {
     findByEmail: jest.fn(),
@@ -32,6 +37,7 @@ describe('AddMemberUseCase', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AddMemberUseCase,
+        { provide: AuthorizationService, useValue: authorizationService },
         {
           provide: MEMBERSHIP_REPOSITORY,
           useValue: membershipRepository,
@@ -45,6 +51,7 @@ describe('AddMemberUseCase', () => {
 
     useCase = module.get(AddMemberUseCase);
     jest.clearAllMocks();
+    authorizationService.assertCan.mockResolvedValue(undefined);
   });
 
   const now = new Date('2026-01-01T00:00:00.000Z');
@@ -98,7 +105,30 @@ describe('AddMemberUseCase', () => {
     });
   });
 
-  it('rejects a non-member actor with ForbiddenException', async () => {
+  it('checks MEMBER_INVITE before anything else and blocks when denied', async () => {
+    authorizationService.assertCan.mockRejectedValueOnce(
+      new ForbiddenException('Insufficient permissions for this project'),
+    );
+
+    await expect(
+      useCase.execute({
+        actorUserId: actorId,
+        projectId,
+        targetUserId: targetId,
+        role: 'VIEWER',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(authorizationService.assertCan).toHaveBeenCalledWith(
+      actorId,
+      Permission.MEMBER_INVITE,
+      projectId,
+    );
+    expect(membershipRepository.findByUserAndProject).not.toHaveBeenCalled();
+    expect(userRepository.findById).not.toHaveBeenCalled();
+    expect(membershipRepository.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an actor whose membership disappeared after the permission check', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(null);
 
     await expect(

@@ -1,30 +1,74 @@
 import type { QuoteId, QuoteStatus } from '@flowcommerce/types';
 import type { QuoteEntity } from '../entities/quote.entity';
 
-export interface CreateQuoteInput {
-  // El projectId lo inyecta el use-case desde la ruta autorizada, nunca desde el
-  // body del cliente. El leadId llega en el body, pero la FK compuesta
-  // (lead_id, project_id) impide que se referencie un lead de otro tenant.
-  projectId: string;
-  leadId: string;
-  folio: string;
-  subtotal: number;
-  tax: number;
-  total: number;
-  status: QuoteStatus;
+// Partida ya calculada por el use-case: el repositorio solo la persiste.
+export interface QuoteItemDraft {
+  productId: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  discountPercent: number;
+  lineTotal: number;
+  position: number;
 }
 
-// Filtros del listado. Todos opcionales y siempre ADITIVOS al projectId: pueden
-// reducir el resultado, nunca ampliarlo fuera del tenant.
+export interface QuoteTotals {
+  subtotal: number;
+  discount: number;
+  tax: number;
+  total: number;
+}
+
+export interface CreateQuoteInput {
+  // El projectId lo inyecta el use-case desde la ruta autorizada. El folio NO
+  // se recibe: lo genera el repositorio dentro de la misma transacción.
+  projectId: string;
+  leadId: string;
+  clientId: string | null;
+  createdByUserId: string;
+  // Prefijo del folio según los ajustes del proyecto (p. ej. COT).
+  folioPrefix: string;
+  validUntil: Date | null;
+  notes: string | null;
+  terms: string | null;
+  totals: QuoteTotals;
+  items: QuoteItemDraft[];
+}
+
+// Edición de un borrador. Si llegan `items`, REEMPLAZAN a todas las partidas y
+// `totals` debe venir recalculado con ellas.
+export interface UpdateDraftQuoteInput {
+  clientId?: string | null;
+  validUntil?: Date | null;
+  notes?: string | null;
+  terms?: string | null;
+  totals?: QuoteTotals;
+  items?: QuoteItemDraft[];
+}
+
+export const QUOTE_SORT_FIELDS = ['createdAt', 'total', 'folio'] as const;
+export type QuoteSortField = (typeof QUOTE_SORT_FIELDS)[number];
+
+// Filtros del listado. Todos opcionales y siempre ADITIVOS al projectId.
 export interface ListQuotesFilter {
   status?: QuoteStatus;
+  clientId?: string;
   leadId?: string;
+  // Coincidencia parcial sobre el folio.
+  search?: string;
+  // Rango sobre la fecha de creación: from inclusive, to exclusivo.
+  from?: Date;
+  to?: Date;
+  sortBy?: QuoteSortField;
+  order?: 'asc' | 'desc';
   page?: number;
   limit?: number;
 }
 
-export interface UpdateQuoteStatusInput {
-  status: QuoteStatus;
+export interface TransitionQuoteInput {
+  from: QuoteStatus;
+  to: QuoteStatus;
+  at: Date;
 }
 
 export interface PaginatedQuotes {
@@ -32,10 +76,10 @@ export interface PaginatedQuotes {
   total: number;
 }
 
-// Almacén de cotizaciones con ámbito de tenant. Igual que en leads, el projectId
-// forma parte del nombre del método para que la restricción sea visible al leer
-// la firma y no dependa de que quien llama recuerde filtrar.
+// Almacén de cotizaciones con ámbito de tenant: el projectId forma parte del
+// nombre del método y llega hasta el WHERE.
 export interface QuoteRepository {
+  // Con partidas, lead y cliente.
   findByIdInProject(
     id: QuoteId,
     projectId: string,
@@ -44,13 +88,24 @@ export interface QuoteRepository {
     projectId: string,
     filter?: ListQuotesFilter,
   ): Promise<PaginatedQuotes>;
+  // Genera el folio correlativo e inserta cotización y partidas en una sola
+  // transacción.
   create(input: CreateQuoteInput): Promise<QuoteEntity>;
-  // Devuelve null si la cotización no existe EN ESE proyecto, que el use-case
-  // traduce a 404 indistinguible de "no existe".
-  updateStatusInProject(
+  // Solo actúa si la cotización sigue en DRAFT. null = no existe en el proyecto
+  // o ya no es borrador (el use-case relee para distinguirlo).
+  updateDraftInProject(
     id: QuoteId,
     projectId: string,
-    input: UpdateQuoteStatusInput,
+    input: UpdateDraftQuoteInput,
+  ): Promise<QuoteEntity | null>;
+  // Igual que updateDraftInProject: solo borra borradores.
+  deleteDraftInProject(id: QuoteId, projectId: string): Promise<boolean>;
+  // Transición ATÓMICA: UPDATE ... WHERE id AND project_id AND status = from.
+  // null = no existe o el estado ya cambió; nada se modifica.
+  transitionStatusInProject(
+    id: QuoteId,
+    projectId: string,
+    input: TransitionQuoteInput,
   ): Promise<QuoteEntity | null>;
 }
 

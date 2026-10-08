@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Permission } from '@flowcommerce/types';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   ForbiddenException,
   NotFoundException,
@@ -9,21 +11,25 @@ import { ChangeMemberRoleUseCase } from './change-member-role.use-case';
 describe('ChangeMemberRoleUseCase', () => {
   let useCase: ChangeMemberRoleUseCase;
   const membershipRepository = {
-    findById: jest.fn(),
-    findMemberById: jest.fn(),
+    findByIdInProject: jest.fn(),
+    findMemberByIdInProject: jest.fn(),
     findByUserAndProject: jest.fn(),
     findMembersByProject: jest.fn(),
     findMyProjects: jest.fn(),
     create: jest.fn(),
-    updateRole: jest.fn(),
-    delete: jest.fn(),
+    updateRoleInProject: jest.fn(),
+    deleteInProject: jest.fn(),
     countOwners: jest.fn(),
+  };
+  const authorizationService = {
+    assertCan: jest.fn(),
   };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChangeMemberRoleUseCase,
+        { provide: AuthorizationService, useValue: authorizationService },
         {
           provide: MEMBERSHIP_REPOSITORY,
           useValue: membershipRepository,
@@ -33,6 +39,7 @@ describe('ChangeMemberRoleUseCase', () => {
 
     useCase = module.get(ChangeMemberRoleUseCase);
     jest.clearAllMocks();
+    authorizationService.assertCan.mockResolvedValue(undefined);
   });
 
   const now = new Date('2026-01-01T00:00:00.000Z');
@@ -60,9 +67,13 @@ describe('ChangeMemberRoleUseCase', () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('MEMBER'));
-    membershipRepository.updateRole.mockResolvedValue(membership('ADMIN'));
-    membershipRepository.findMemberById.mockResolvedValue({
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
+    membershipRepository.updateRoleInProject.mockResolvedValue(
+      membership('ADMIN'),
+    );
+    membershipRepository.findMemberByIdInProject.mockResolvedValue({
       membership: membership('ADMIN'),
       userId: '22222222-2222-4222-8222-222222222222',
       name: 'Ada Lovelace',
@@ -77,13 +88,41 @@ describe('ChangeMemberRoleUseCase', () => {
     });
 
     expect(result.membership.role).toBe('ADMIN');
-    expect(membershipRepository.updateRole).toHaveBeenCalledWith(
+    expect(authorizationService.assertCan).toHaveBeenCalledWith(
+      actorId,
+      Permission.MEMBER_UPDATE_ROLE,
+      projectId,
+    );
+    expect(membershipRepository.findByIdInProject).toHaveBeenCalledWith(
       targetMembershipId,
+      projectId,
+    );
+    expect(membershipRepository.updateRoleInProject).toHaveBeenCalledWith(
+      targetMembershipId,
+      projectId,
       'ADMIN',
     );
   });
 
-  it('rejects a non-member actor', async () => {
+  it('rejects an actor without MEMBER_UPDATE_ROLE before touching memberships', async () => {
+    authorizationService.assertCan.mockRejectedValueOnce(
+      new ForbiddenException('Insufficient permissions for this project'),
+    );
+
+    await expect(
+      useCase.execute({
+        actorUserId: actorId,
+        projectId,
+        targetMembershipId,
+        newRole: 'VIEWER',
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(membershipRepository.findByUserAndProject).not.toHaveBeenCalled();
+    expect(membershipRepository.findByIdInProject).not.toHaveBeenCalled();
+    expect(membershipRepository.updateRoleInProject).not.toHaveBeenCalled();
+  });
+
+  it('rejects an actor whose membership disappeared after the permission check', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(null);
 
     await expect(
@@ -94,23 +133,16 @@ describe('ChangeMemberRoleUseCase', () => {
         newRole: 'ADMIN',
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.updateRole).not.toHaveBeenCalled();
+    expect(membershipRepository.updateRoleInProject).not.toHaveBeenCalled();
   });
 
-  it('rejects a membership that does not belong to the project', async () => {
+  it('rejects a membership that does not belong to the project (404)', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(
-      membership(
-        'MEMBER',
-        targetMembershipId,
-        '22222222-2222-4222-8222-222222222222',
-      ),
-    );
-    membershipRepository.findById.mockImplementationOnce(() =>
-      Promise.resolve({ ...membership('MEMBER'), projectId: 'other-project' }),
-    );
+    // El repositorio filtra por (id, projectId): una membership de otro
+    // proyecto no aparece.
+    membershipRepository.findByIdInProject.mockResolvedValue(null);
 
     await expect(
       useCase.execute({
@@ -120,13 +152,40 @@ describe('ChangeMemberRoleUseCase', () => {
         newRole: 'ADMIN',
       }),
     ).rejects.toBeInstanceOf(NotFoundException);
+    expect(membershipRepository.findByIdInProject).toHaveBeenCalledWith(
+      targetMembershipId,
+      projectId,
+    );
+    expect(membershipRepository.updateRoleInProject).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 if the scoped update affects no row', async () => {
+    membershipRepository.findByUserAndProject.mockResolvedValue(
+      baseActor('OWNER'),
+    );
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
+    membershipRepository.updateRoleInProject.mockResolvedValue(null);
+
+    await expect(
+      useCase.execute({
+        actorUserId: actorId,
+        projectId,
+        targetMembershipId,
+        newRole: 'ADMIN',
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(membershipRepository.findMemberByIdInProject).not.toHaveBeenCalled();
   });
 
   it('prevents an ADMIN from changing an OWNER role', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('ADMIN'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
 
     await expect(
       useCase.execute({
@@ -142,7 +201,9 @@ describe('ChangeMemberRoleUseCase', () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
     membershipRepository.countOwners.mockResolvedValue(1);
 
     await expect(
@@ -153,17 +214,21 @@ describe('ChangeMemberRoleUseCase', () => {
         newRole: 'MEMBER',
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.updateRole).not.toHaveBeenCalled();
+    expect(membershipRepository.updateRoleInProject).not.toHaveBeenCalled();
   });
 
   it('allows demoting an OWNER when another OWNER exists', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
     membershipRepository.countOwners.mockResolvedValue(2);
-    membershipRepository.updateRole.mockResolvedValue(membership('MEMBER'));
-    membershipRepository.findMemberById.mockResolvedValue({
+    membershipRepository.updateRoleInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
+    membershipRepository.findMemberByIdInProject.mockResolvedValue({
       membership: membership('MEMBER'),
       userId: '22222222-2222-4222-8222-222222222222',
       name: 'Ada Lovelace',
@@ -184,7 +249,9 @@ describe('ChangeMemberRoleUseCase', () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('ADMIN'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('MEMBER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
 
     await expect(
       useCase.execute({
@@ -194,6 +261,6 @@ describe('ChangeMemberRoleUseCase', () => {
         newRole: 'OWNER',
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.updateRole).not.toHaveBeenCalled();
+    expect(membershipRepository.updateRoleInProject).not.toHaveBeenCalled();
   });
 });

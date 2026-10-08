@@ -20,6 +20,21 @@ export interface SignUpSessionInput {
 export interface SignInSessionInput {
   email: string;
   password: string;
+  // true = sesión persistente («Recordarme»); false = sesión de navegador.
+  rememberMe?: boolean;
+}
+
+// Solicitud de envío del enlace de recuperación de contraseña. Better Auth
+// responde siempre de forma genérica (sin revelar si el email existe).
+export interface RequestPasswordResetInput {
+  email: string;
+}
+
+// Aplica un token de recuperación con la contraseña nueva. El token es de un
+// solo uso: Better Auth lo consume y revoca las sesiones existentes.
+export interface ResetPasswordInput {
+  token: string;
+  newPassword: string;
 }
 
 // Resultado de una autenticación correcta que genera un token de sesión.

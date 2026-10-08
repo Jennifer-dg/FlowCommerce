@@ -20,6 +20,12 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     Permission.QUOTE_READ,
     Permission.QUOTE_APPROVE,
     Permission.WHATSAPP_SEND_MESSAGE,
+    Permission.PRODUCT_READ,
+    Permission.PRODUCT_MANAGE,
+    Permission.CLIENT_CREATE,
+    Permission.CLIENT_READ,
+    Permission.CLIENT_UPDATE,
+    Permission.CLIENT_DELETE,
   ],
   ADMIN: [
     Permission.PROJECT_READ,
@@ -37,6 +43,12 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     Permission.QUOTE_READ,
     Permission.QUOTE_APPROVE,
     Permission.WHATSAPP_SEND_MESSAGE,
+    Permission.PRODUCT_READ,
+    Permission.PRODUCT_MANAGE,
+    Permission.CLIENT_CREATE,
+    Permission.CLIENT_READ,
+    Permission.CLIENT_UPDATE,
+    Permission.CLIENT_DELETE,
   ],
   MEMBER: [
     Permission.PROJECT_READ,
@@ -50,6 +62,13 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     Permission.QUOTE_CREATE,
     Permission.QUOTE_READ,
     Permission.WHATSAPP_SEND_MESSAGE,
+    // El catálogo fija los precios: MEMBER lo consulta para cotizar, pero no lo
+    // modifica. Crear, editar o desactivar productos queda en ADMIN y OWNER.
+    Permission.PRODUCT_READ,
+    // MEMBER gestiona su cartera de clientes; borrar uno queda en ADMIN y OWNER.
+    Permission.CLIENT_CREATE,
+    Permission.CLIENT_READ,
+    Permission.CLIENT_UPDATE,
   ],
   VIEWER: [
     Permission.PROJECT_READ,
@@ -57,6 +76,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     // Solo lectura del embudo, igual que MEMBER_READ para miembros.
     Permission.LEAD_READ,
     Permission.QUOTE_READ,
+    Permission.PRODUCT_READ,
+    Permission.CLIENT_READ,
   ],
 };
 

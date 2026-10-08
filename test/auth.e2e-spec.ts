@@ -127,6 +127,41 @@ describe('Auth (e2e)', () => {
     );
   });
 
+  it('POST /api/v1/auth/login with rememberMe sets a persistent cookie', async () => {
+    const createdAt = new Date('2026-01-01T00:00:00.000Z');
+    loginUseCase.execute.mockResolvedValue({
+      user: {
+        id: 'user-id',
+        name: 'Ada Lovelace',
+        email: 'ada@flowcommerce.local',
+        creadoEn: createdAt,
+        actualizadoEn: createdAt,
+      },
+      token: 'login-token',
+    });
+
+    const remembered = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({
+        email: 'ada@flowcommerce.local',
+        password: 'SecurePassword123!',
+        rememberMe: true,
+      })
+      .expect(200);
+    const browserOnly = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({
+        email: 'ada@flowcommerce.local',
+        password: 'SecurePassword123!',
+      })
+      .expect(200);
+
+    const cookieOf = (res: { headers: Record<string, unknown> }) =>
+      String((res.headers['set-cookie'] as string[] | undefined)?.[0] ?? '');
+    expect(cookieOf(remembered)).toMatch(/Max-Age=604800/);
+    expect(cookieOf(browserOnly)).not.toMatch(/Max-Age/);
+  });
+
   it('GET /api/v1/auth/session returns the current user', async () => {
     const createdAt = new Date('2026-01-01T00:00:00.000Z');
     sessionManager.getSession.mockResolvedValue({

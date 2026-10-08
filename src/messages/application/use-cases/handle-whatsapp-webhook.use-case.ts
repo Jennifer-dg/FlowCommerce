@@ -117,13 +117,18 @@ export class HandleWhatsAppWebhookUseCase {
           continue;
         }
 
-        if (
-          expectedPhoneNumberId &&
-          value.metadata?.phone_number_id &&
-          value.metadata.phone_number_id !== expectedPhoneNumberId
-        ) {
+        // Fail-closed: el evento solo se acepta si trae el phone_number_id
+        // configurado. Sin él (o sin configuración) no hay forma de saber a
+        // qué número pertenece, y se descarta en vez de persistirlo.
+        if (!expectedPhoneNumberId) {
           this.logger.warn(
-            'Ignoring WhatsApp event for a foreign phone_number_id',
+            'WHATSAPP_PHONE_NUMBER_ID is not set; inbound WhatsApp events are not persisted',
+          );
+          continue;
+        }
+        if (value.metadata?.phone_number_id !== expectedPhoneNumberId) {
+          this.logger.warn(
+            'Ignoring WhatsApp event with a missing or foreign phone_number_id',
           );
           continue;
         }
