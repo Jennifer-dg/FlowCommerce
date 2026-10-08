@@ -1,4 +1,4 @@
-import type { User } from '@flowcommerce/types';
+import type { User, UserProfile } from '@flowcommerce/types';
 
 // Entidad de dominio de un usuario del sistema.
 export class UserEntity implements User {
@@ -9,7 +9,17 @@ export class UserEntity implements User {
     public readonly creadoEn: Date,
     public readonly actualizadoEn: Date,
     public readonly emailVerified = false,
+    public readonly phone: string | null = null,
+    public readonly position: string | null = null,
   ) {}
+
+  toProfile(): UserProfile {
+    return {
+      ...this.toUser(),
+      phone: this.phone,
+      position: this.position,
+    };
+  }
 
   toUser(): User {
     return {

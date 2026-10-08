@@ -1,9 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { Permission } from '@flowcommerce/types';
 import {
   ForbiddenException,
   NotFoundException,
 } from '../../../common/exceptions/domain.exceptions';
 import { canManageRole } from '../../../authorization/domain/role.rules';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   MEMBERSHIP_REPOSITORY,
   type MembershipRepository,
@@ -18,12 +20,21 @@ export interface RemoveMemberInput {
 @Injectable()
 export class RemoveMemberUseCase {
   constructor(
+    private readonly authorizationService: AuthorizationService,
     @Inject(MEMBERSHIP_REPOSITORY)
     private readonly membershipRepository: MembershipRepository,
   ) {}
 
-  // Elimina a un miembro del proyecto, protegiendo al último OWNER.
+  // Elimina a un miembro del proyecto, protegiendo al último OWNER. Exige
+  // MEMBER_REMOVE antes de nada (defensa en profundidad) y el DELETE va acotado
+  // por projectId.
   async execute(input: RemoveMemberInput): Promise<void> {
+    await this.authorizationService.assertCan(
+      input.actorUserId,
+      Permission.MEMBER_REMOVE,
+      input.projectId,
+    );
+
     const actorMembership =
       await this.membershipRepository.findByUserAndProject(
         input.actorUserId,
@@ -34,11 +45,12 @@ export class RemoveMemberUseCase {
       throw new ForbiddenException('You are not a member of this project');
     }
 
-    const targetMembership = await this.membershipRepository.findById(
+    const targetMembership = await this.membershipRepository.findByIdInProject(
       input.targetMembershipId,
+      input.projectId,
     );
 
-    if (!targetMembership || targetMembership.projectId !== input.projectId) {
+    if (!targetMembership) {
       throw new NotFoundException('Membership not found in this project');
     }
 
@@ -59,6 +71,13 @@ export class RemoveMemberUseCase {
       }
     }
 
-    await this.membershipRepository.delete(input.targetMembershipId);
+    const deleted = await this.membershipRepository.deleteInProject(
+      input.targetMembershipId,
+      input.projectId,
+    );
+
+    if (!deleted) {
+      throw new NotFoundException('Membership not found in this project');
+    }
   }
 }

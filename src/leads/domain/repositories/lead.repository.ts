@@ -1,4 +1,4 @@
-import type { LeadId, LeadStage } from '@flowcommerce/types';
+import type { LeadId, LeadSource, LeadStage } from '@flowcommerce/types';
 import type { LeadEntity } from '../entities/lead.entity';
 
 export interface CreateLeadInput {
@@ -8,15 +8,44 @@ export interface CreateLeadInput {
   phone: string | null;
   stage: LeadStage;
   score: number;
+  company: string | null;
+  source: LeadSource | null;
+  estimatedValue: number | null;
+  notes: string | null;
+  assignedUserId: string | null;
+  clientId: string | null;
+  interestProductId: string | null;
+  lastContactAt: Date | null;
 }
+
+export type DeleteLeadResult = 'DELETED' | 'NOT_FOUND' | 'HAS_HISTORY';
+
+export const LEAD_SORT_FIELDS = [
+  'createdAt',
+  'updatedAt',
+  'name',
+  'estimatedValue',
+  'lastContactAt',
+] as const;
+export type LeadSortField = (typeof LEAD_SORT_FIELDS)[number];
 
 // Filtros del listado. Todos son opcionales y TODOS se combinan con AND sobre
 // una condición previa de projectId: el tenant es obligatorio y nunca se
 // sustituye por un filtro.
 export interface ListLeadsFilter {
   stage?: LeadStage;
-  // Búsqueda por texto libre sobre nombre, email y teléfono.
+  // Varias etapas a la vez (OR entre ellas). Se combina con `stage` si llegan ambos.
+  stages?: LeadStage[];
+  // Búsqueda por texto libre sobre nombre, email, teléfono y empresa.
   search?: string;
+  assignedUserId?: string;
+  source?: LeadSource;
+  clientId?: string;
+  createdFrom?: Date;
+  createdTo?: Date;
+  // Sin sortBy se mantiene el orden histórico: creación ascendente.
+  sortBy?: LeadSortField;
+  order?: 'asc' | 'desc';
   page?: number;
   limit?: number;
 }
@@ -30,6 +59,14 @@ export interface UpdateLeadInput {
   phone?: string | null;
   stage?: LeadStage;
   score?: number;
+  company?: string | null;
+  source?: LeadSource | null;
+  estimatedValue?: number | null;
+  notes?: string | null;
+  assignedUserId?: string | null;
+  clientId?: string | null;
+  interestProductId?: string | null;
+  lastContactAt?: Date | null;
 }
 
 // Listado paginado: las filas del tenant en la página pedida, más el total de
@@ -65,9 +102,24 @@ export interface LeadRepository {
     projectId: string,
     input: UpdateLeadInput,
   ): Promise<LeadEntity | null>;
-  // Devuelve false si el lead no existe en ese proyecto. Borra en cascada sus
-  // quotes y messages por la FK compuesta con ON DELETE CASCADE.
-  deleteInProject(id: LeadId, projectId: string): Promise<boolean>;
+  // Vincula el lead a un cliente SOLO si aún no tenía cliente (WHERE
+  // client_id IS NULL): dos conversiones simultáneas no pueden ganar ambas.
+  // null = no existe en el proyecto o ya estaba convertido.
+  linkClientInProject(
+    id: LeadId,
+    projectId: string,
+    clientId: string,
+    stage?: LeadStage,
+  ): Promise<LeadEntity | null>;
+  // Borrado ATÓMICO y protegido: el DELETE solo actúa si el lead NO tiene
+  // historial comercial, es decir, ninguna cotización fuera de DRAFT, ningún
+  // mensaje y ningún cliente originado por su conversión. Los borradores sí
+  // caen con el lead (ON DELETE CASCADE).
+  //   DELETED     -> borrado.
+  //   NOT_FOUND   -> no existe en ese proyecto.
+  //   HAS_HISTORY -> existe pero tiene cotizaciones en curso/cerradas o
+  //                  mensajes; no se toca nada.
+  deleteInProject(id: LeadId, projectId: string): Promise<DeleteLeadResult>;
 }
 
 export const LEADS_REPOSITORY = Symbol('LEADS_REPOSITORY');

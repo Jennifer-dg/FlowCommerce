@@ -1,31 +1,103 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsString, IsUUID, Min } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsISO8601,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 
-// No se acepta projectId ni status: el projectId lo fija el guard a partir de
-// la ruta, y el status inicial lo fuerza el use-case a DRAFT para que una
-// cotización no pueda nacer ya aprobada.
+// Partida del body: solo producto, cantidad y descuento. El PRECIO no se envía:
+// sale del catálogo, para que nadie pueda cotizar por debajo de lista.
+export class QuoteItemInputDto {
+  @ApiProperty({ format: 'uuid', description: 'Producto del catálogo' })
+  @IsUUID()
+  productId!: string;
+
+  @ApiProperty({ example: 2, minimum: 0.01 })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.01)
+  @Max(1_000_000)
+  quantity!: number;
+
+  @ApiPropertyOptional({
+    example: 5,
+    minimum: 0,
+    maximum: 100,
+    default: 0,
+    description:
+      'No puede superar el descuento máximo del producto (si no, 400)',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  @Max(100)
+  discountPercent?: number;
+
+  @ApiPropertyOptional({
+    maxLength: 1000,
+    description: 'Si se omite, se usa el nombre del producto',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  description?: string;
+}
+
+// No se acepta projectId, folio, importes ni status: el projectId lo fija el
+// guard desde la ruta, el folio es correlativo, los importes los calcula el
+// servidor y el status inicial es siempre DRAFT.
 export class CreateQuoteDto {
   @ApiProperty({ format: 'uuid' })
   @IsUUID()
-  @IsNotEmpty()
   leadId!: string;
 
-  @ApiProperty({ example: 'COT-2026-0001', maxLength: 64 })
+  @ApiPropertyOptional({
+    format: 'uuid',
+    nullable: true,
+    description: 'Si se omite, se usa el cliente del lead',
+  })
+  @IsOptional()
+  @IsUUID()
+  clientId?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    example: '2026-12-31T23:59:59.000Z',
+  })
+  @IsOptional()
+  @IsISO8601()
+  validUntil?: string | null;
+
+  @ApiPropertyOptional({ nullable: true })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  folio!: string;
+  @MaxLength(5000)
+  notes?: string | null;
 
-  @ApiProperty({ example: 1000, minimum: 0 })
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  subtotal!: number;
+  @ApiPropertyOptional({
+    nullable: true,
+    description: 'Términos y condiciones',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(10000)
+  terms?: string | null;
 
-  @ApiProperty({ example: 160, minimum: 0 })
-  @IsNumber({ maxDecimalPlaces: 2 })
-  @Min(0)
-  tax!: number;
-
-  // `total` no forma parte del body a propósito: el use-case lo recalcula como
-  // subtotal + tax. Aceptarlo permitiría crear cotizaciones cuyo total no
-  // cuadra con sus partidas.
+  @ApiPropertyOptional({ type: QuoteItemInputDto, isArray: true })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => QuoteItemInputDto)
+  items?: QuoteItemInputDto[];
 }

@@ -113,6 +113,35 @@ describe('role-permissions matrix', () => {
     expect(roleHasPermission(Role.MEMBER, Permission.LEAD_DELETE)).toBe(false);
   });
 
+  it('lets every role read the catalog but only OWNER and ADMIN manage it', () => {
+    for (const role of [Role.OWNER, Role.ADMIN, Role.MEMBER, Role.VIEWER]) {
+      expect(roleHasPermission(role, Permission.PRODUCT_READ)).toBe(true);
+    }
+    expect(roleHasPermission(Role.OWNER, Permission.PRODUCT_MANAGE)).toBe(true);
+    expect(roleHasPermission(Role.ADMIN, Permission.PRODUCT_MANAGE)).toBe(true);
+    expect(roleHasPermission(Role.MEMBER, Permission.PRODUCT_MANAGE)).toBe(
+      false,
+    );
+    expect(roleHasPermission(Role.VIEWER, Permission.PRODUCT_MANAGE)).toBe(
+      false,
+    );
+  });
+
+  it('lets MEMBER manage clients but only OWNER and ADMIN delete them', () => {
+    for (const role of [Role.OWNER, Role.ADMIN, Role.MEMBER]) {
+      expect(roleHasPermission(role, Permission.CLIENT_CREATE)).toBe(true);
+      expect(roleHasPermission(role, Permission.CLIENT_UPDATE)).toBe(true);
+    }
+    expect(roleHasPermission(Role.MEMBER, Permission.CLIENT_DELETE)).toBe(
+      false,
+    );
+    expect(roleHasPermission(Role.ADMIN, Permission.CLIENT_DELETE)).toBe(true);
+    expect(roleHasPermission(Role.VIEWER, Permission.CLIENT_READ)).toBe(true);
+    expect(roleHasPermission(Role.VIEWER, Permission.CLIENT_CREATE)).toBe(
+      false,
+    );
+  });
+
   it('evaluates ALL vs ANY semantics', () => {
     expect(
       roleHasAllPermissions(Role.ADMIN, [

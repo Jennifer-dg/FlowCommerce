@@ -1,5 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { NotFoundException } from '../../../common/exceptions/domain.exceptions';
+import {
+  ConflictException,
+  NotFoundException,
+} from '../../../common/exceptions/domain.exceptions';
 import { Permission } from '@flowcommerce/types';
 import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
@@ -25,8 +28,10 @@ export class DeleteLeadUseCase {
   // WHERE del DELETE, así que borrar un lead de otro tenant no afecta ninguna
   // fila y produce el mismo 404 que un lead inexistente.
   //
-  // OJO: al borrar el lead caen en cascada sus cotizaciones y sus mensajes,
-  // porque quotes y messages lo referencian con FK compuesta ON DELETE CASCADE.
+  // Un lead con historial comercial NO se borra (409): ni con cotizaciones
+  // fuera de DRAFT (enviadas, aceptadas, pagadas…), ni con mensajes (registro de
+  // auditoría), ni convertido en cliente. La forma de retirarlo del embudo es pasarlo a LOST.
+  // Los borradores sí caen con el lead.
   async execute(input: DeleteLeadInput): Promise<void> {
     await this.authorizationService.assertCan(
       input.actorUserId,
@@ -34,13 +39,18 @@ export class DeleteLeadUseCase {
       input.projectId,
     );
 
-    const deleted = await this.leadRepository.deleteInProject(
+    const result = await this.leadRepository.deleteInProject(
       input.leadId,
       input.projectId,
     );
 
-    if (!deleted) {
+    if (result === 'NOT_FOUND') {
       throw new NotFoundException('Lead not found in this project');
+    }
+    if (result === 'HAS_HISTORY') {
+      throw new ConflictException(
+        'Lead has quotes beyond DRAFT, messages or a converted client and cannot be deleted; mark it as LOST instead',
+      );
     }
   }
 }

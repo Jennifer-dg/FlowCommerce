@@ -1,72 +1,109 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { LeadStage, Permission, QuoteStatus } from '@flowcommerce/types';
 import {
+  BadRequestException,
   ConflictException,
   NotFoundException,
 } from '../../../common/exceptions/domain.exceptions';
 import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
+import { CLIENTS_REPOSITORY } from '../../../clients/domain/repositories/client.repository';
 import { LEADS_REPOSITORY } from '../../../leads/domain/repositories/lead.repository';
-import type { LeadRepository } from '../../../leads/domain/repositories/lead.repository';
+import { ProjectEntity } from '../../../projects/domain/entities/project.entity';
+import { PROJECT_REPOSITORY } from '../../../projects/domain/repositories/project.repository';
+import { PRODUCTS_REPOSITORY } from '../../../products/domain/repositories/product.repository';
 import { QuoteEntity } from '../../domain/entities/quote.entity';
 import {
   QUOTES_REPOSITORY,
   type QuoteRepository,
 } from '../../domain/repositories/quote.repository';
+import { QuoteItemsBuilder } from '../quote-items.builder';
+import { QuoteSettingsReader } from '../quote-settings.reader';
 import { CreateQuoteUseCase } from './create-quote.use-case';
+import { DeleteQuoteUseCase } from './delete-quote.use-case';
 import { GetQuoteUseCase } from './get-quote.use-case';
 import { ListQuotesUseCase } from './list-quotes.use-case';
 import { UpdateQuoteStatusUseCase } from './update-quote-status.use-case';
+import { UpdateQuoteUseCase } from './update-quote.use-case';
 
-describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
+describe('Quotes use-cases (tenant isolation + lifecycle)', () => {
   let module: TestingModule;
-  const authorizationService = {
-    assertCan: jest.fn(),
-  };
+  const authorizationService = { assertCan: jest.fn() };
   const quoteRepository: Record<keyof QuoteRepository, jest.Mock> = {
     findByIdInProject: jest.fn(),
     listByProject: jest.fn(),
     create: jest.fn(),
-    updateStatusInProject: jest.fn(),
+    updateDraftInProject: jest.fn(),
+    deleteDraftInProject: jest.fn(),
+    transitionStatusInProject: jest.fn(),
   };
-  const leadRepository: Pick<
-    Record<keyof LeadRepository, jest.Mock>,
-    'findByIdInProject'
-  > = {
-    findByIdInProject: jest.fn(),
-  };
+  const leadRepository = { findByIdInProject: jest.fn() };
+  const clientRepository = { findByIdInProject: jest.fn() };
+  const productRepository = { findManyByIdsInProject: jest.fn() };
+  const projectRepository = { findById: jest.fn() };
 
   const actorId = '11111111-1111-4111-8111-111111111111';
   const projectId = '33333333-3333-4333-8333-333333333333';
   const leadId = '77777777-7777-4777-8777-777777777777';
+  const clientId = '55555555-5555-4555-8555-555555555555';
+  const productId = '66666666-6666-4666-8666-666666666666';
   const quoteId = '99999999-9999-4999-8999-999999999999';
   const foreignQuoteId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
   const foreignLeadId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
   const now = new Date('2026-01-01T00:00:00.000Z');
 
-  const quote = (status: QuoteStatus): QuoteEntity =>
-    new QuoteEntity(
-      quoteId,
+  const item = {
+    id: 'item-1',
+    quoteId,
+    productId,
+    description: 'Licencia',
+    quantity: 2,
+    unitPrice: 500,
+    discountPercent: 0,
+    lineTotal: 1000,
+    position: 1,
+  };
+
+  const quote = (status: QuoteStatus, withItems = true): QuoteEntity =>
+    new QuoteEntity({
+      id: quoteId,
       projectId,
       leadId,
-      'COT-2026-0001',
-      1000,
-      160,
-      1160,
+      clientId: null,
+      folio: 'COT-000001',
+      subtotal: 1000,
+      discount: 0,
+      tax: 190,
+      total: 1190,
       status,
-      now,
-      now,
-    );
+      validUntil: null,
+      notes: null,
+      terms: null,
+      createdByUserId: actorId,
+      approvedAt: null,
+      sentAt: null,
+      acceptedAt: null,
+      rejectedAt: null,
+      paidAt: null,
+      creadoEn: now,
+      actualizadoEn: now,
+      items: withItems ? [item] : [],
+    });
+
+  const product = {
+    id: productId,
+    projectId,
+    name: 'Licencia',
+    price: 500,
+    maxDiscountPercent: 10,
+    active: true,
+  };
 
   const lead = {
     id: leadId,
     projectId,
     name: 'Ana Torres',
-    email: 'ana@example.com',
-    phone: null,
+    clientId: null,
     stage: LeadStage.NEW,
-    score: 0,
-    creadoEn: now,
-    actualizadoEn: now,
   };
 
   beforeAll(async () => {
@@ -75,51 +112,66 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
         CreateQuoteUseCase,
         ListQuotesUseCase,
         GetQuoteUseCase,
+        UpdateQuoteUseCase,
+        DeleteQuoteUseCase,
         UpdateQuoteStatusUseCase,
-        {
-          provide: AuthorizationService,
-          useValue: authorizationService,
-        },
-        {
-          provide: QUOTES_REPOSITORY,
-          useValue: quoteRepository,
-        },
-        {
-          provide: LEADS_REPOSITORY,
-          useValue: leadRepository,
-        },
+        QuoteItemsBuilder,
+        QuoteSettingsReader,
+        { provide: PROJECT_REPOSITORY, useValue: projectRepository },
+        { provide: AuthorizationService, useValue: authorizationService },
+        { provide: QUOTES_REPOSITORY, useValue: quoteRepository },
+        { provide: LEADS_REPOSITORY, useValue: leadRepository },
+        { provide: CLIENTS_REPOSITORY, useValue: clientRepository },
+        { provide: PRODUCTS_REPOSITORY, useValue: productRepository },
       ],
     }).compile();
   });
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    jest.resetAllMocks();
+    authorizationService.assertCan.mockResolvedValue(undefined);
+    // Proyecto con los ajustes por defecto (IVA 12 %, prefijo COT, 30 días).
+    projectRepository.findById.mockResolvedValue(
+      new ProjectEntity('p', 'Proyecto', 'proyecto', null, now, now),
+    );
   });
 
   describe('create()', () => {
-    it('creates a DRAFT quote scoped to the project', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('creates a DRAFT with catalog prices and server-side totals', async () => {
       leadRepository.findByIdInProject.mockResolvedValue(lead);
+      productRepository.findManyByIdsInProject.mockResolvedValue([product]);
       quoteRepository.create.mockResolvedValue(quote(QuoteStatus.DRAFT));
 
-      const created = await module.get(CreateQuoteUseCase).execute({
+      await module.get(CreateQuoteUseCase).execute({
         actorUserId: actorId,
         projectId,
         leadId,
-        folio: 'COT-2026-0001',
-        subtotal: 1000,
-        tax: 160,
+        items: [{ productId, quantity: 2, discountPercent: 10 }],
       });
 
-      expect(created.status).toBe(QuoteStatus.DRAFT);
+      // 2 x 500 = 1000 bruto; 10% = 100; base 900; IVA 12% = 108; total 1008.
       expect(quoteRepository.create).toHaveBeenCalledWith({
         projectId,
         leadId,
-        folio: 'COT-2026-0001',
-        subtotal: 1000,
-        tax: 160,
-        total: 1160,
-        status: QuoteStatus.DRAFT,
+        clientId: null,
+        createdByUserId: actorId,
+        folioPrefix: 'COT',
+        // Sin validUntil en el body: hoy + 30 días de vigencia por defecto.
+        validUntil: expect.any(Date) as Date,
+        notes: null,
+        terms: null,
+        totals: { subtotal: 1000, discount: 100, tax: 108, total: 1008 },
+        items: [
+          {
+            productId,
+            description: 'Licencia',
+            quantity: 2,
+            unitPrice: 500,
+            discountPercent: 10,
+            lineTotal: 900,
+            position: 1,
+          },
+        ],
       });
       expect(authorizationService.assertCan).toHaveBeenCalledWith(
         actorId,
@@ -128,8 +180,55 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
       );
     });
 
-    it('recomputes the total so it cannot be tampered with', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('applies the project quote settings: tax, folio prefix, validity and terms', async () => {
+      projectRepository.findById.mockResolvedValue(
+        new ProjectEntity(
+          'p',
+          'Proyecto',
+          'proyecto',
+          null,
+          now,
+          now,
+          undefined,
+          {
+            taxPercent: 10,
+            folioPrefix: 'PRE',
+            validityDays: 5,
+            defaultTerms: 'Pago contra entrega',
+            currency: 'USD',
+          },
+        ),
+      );
+      leadRepository.findByIdInProject.mockResolvedValue(lead);
+      productRepository.findManyByIdsInProject.mockResolvedValue([product]);
+      quoteRepository.create.mockResolvedValue(quote(QuoteStatus.DRAFT));
+
+      const before = Date.now();
+      await module.get(CreateQuoteUseCase).execute({
+        actorUserId: actorId,
+        projectId,
+        leadId,
+        items: [{ productId, quantity: 2 }],
+      });
+
+      const created = (
+        quoteRepository.create.mock.calls as unknown[][]
+      )[0][0] as {
+        folioPrefix: string;
+        terms: string | null;
+        validUntil: Date;
+        totals: { tax: number; total: number };
+      };
+      expect(created.folioPrefix).toBe('PRE');
+      expect(created.terms).toBe('Pago contra entrega');
+      // 1000 + 10 % de IVA
+      expect(created.totals).toMatchObject({ tax: 100, total: 1100 });
+      const days = (created.validUntil.getTime() - before) / 86_400_000;
+      expect(days).toBeGreaterThan(4.99);
+      expect(days).toBeLessThan(5.01);
+    });
+
+    it('keeps an explicit null validUntil and explicit terms', async () => {
       leadRepository.findByIdInProject.mockResolvedValue(lead);
       quoteRepository.create.mockResolvedValue(quote(QuoteStatus.DRAFT));
 
@@ -137,19 +236,62 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
         actorUserId: actorId,
         projectId,
         leadId,
-        folio: 'COT-2026-0001',
-        subtotal: 333.33,
-        tax: 53.33,
+        validUntil: null,
+        terms: null,
       });
 
-      // 386.66 exacto: el redondeo a 2 decimales evita el error de coma flotante.
       expect(quoteRepository.create).toHaveBeenCalledWith(
-        expect.objectContaining({ total: 386.66 }),
+        expect.objectContaining({ validUntil: null, terms: null }),
       );
     });
 
-    it('refuses to attach a quote to a lead from another project', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('rejects a discount above the product maximum with 400', async () => {
+      leadRepository.findByIdInProject.mockResolvedValue(lead);
+      productRepository.findManyByIdsInProject.mockResolvedValue([product]);
+
+      await expect(
+        module.get(CreateQuoteUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          leadId,
+          items: [{ productId, quantity: 1, discountPercent: 10.01 }],
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(quoteRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a product that is not in the project', async () => {
+      leadRepository.findByIdInProject.mockResolvedValue(lead);
+      productRepository.findManyByIdsInProject.mockResolvedValue([]);
+
+      await expect(
+        module.get(CreateQuoteUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          leadId,
+          items: [{ productId, quantity: 1 }],
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('returns 409 for an inactive product', async () => {
+      leadRepository.findByIdInProject.mockResolvedValue(lead);
+      productRepository.findManyByIdsInProject.mockResolvedValue([
+        { ...product, active: false },
+      ]);
+
+      await expect(
+        module.get(CreateQuoteUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          leadId,
+          items: [{ productId, quantity: 1 }],
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('refuses a lead from another project and never writes', async () => {
       leadRepository.findByIdInProject.mockResolvedValue(null);
 
       await expect(
@@ -157,101 +299,78 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
           actorUserId: actorId,
           projectId,
           leadId: foreignLeadId,
-          folio: 'COT-2026-0001',
-          subtotal: 1000,
-          tax: 160,
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
 
-      // La comprobación ocurre ANTES de insertar: no se intenta escribir una
-      // fila que la FK compuesta rechazaría.
       expect(quoteRepository.create).not.toHaveBeenCalled();
-      // Y el lead se busca siempre dentro del proyecto del actor.
       expect(leadRepository.findByIdInProject).toHaveBeenCalledWith(
         foreignLeadId,
         projectId,
       );
     });
 
-    it('translates a duplicate folio into a 409', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('refuses a client from another project', async () => {
       leadRepository.findByIdInProject.mockResolvedValue(lead);
-      // Forma REAL del error: Drizzle envuelve el del driver en un
-      // DrizzleQueryError y el SQLSTATE queda en .cause. Si el use-case solo
-      // mirara el nivel superior, este test passaría con un mock plano y el
-      // e2e fallaría con un 500.
-      quoteRepository.create.mockRejectedValue(
-        Object.assign(new Error('Failed query: insert into "quotes"'), {
-          cause: Object.assign(new Error('duplicate key'), { code: '23505' }),
-        }),
-      );
+      clientRepository.findByIdInProject.mockResolvedValue(null);
 
       await expect(
         module.get(CreateQuoteUseCase).execute({
           actorUserId: actorId,
           projectId,
           leadId,
-          folio: 'COT-2026-0001',
-          subtotal: 1000,
-          tax: 160,
+          clientId,
         }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      expect(clientRepository.findByIdInProject).toHaveBeenCalledWith(
+        clientId,
+        projectId,
+      );
+      expect(quoteRepository.create).not.toHaveBeenCalled();
     });
 
-    it('translates a duplicate folio when the code is at the top level', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
-      leadRepository.findByIdInProject.mockResolvedValue(lead);
-      quoteRepository.create.mockRejectedValue(
-        Object.assign(new Error('duplicate key'), { code: '23505' }),
-      );
+    it('defaults the client to the lead client', async () => {
+      leadRepository.findByIdInProject.mockResolvedValue({
+        ...lead,
+        clientId,
+      });
+      clientRepository.findByIdInProject.mockResolvedValue({ id: clientId });
+      quoteRepository.create.mockResolvedValue(quote(QuoteStatus.DRAFT));
 
-      await expect(
-        module.get(CreateQuoteUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          leadId,
-          folio: 'COT-2026-0001',
-          subtotal: 1000,
-          tax: 160,
-        }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      await module
+        .get(CreateQuoteUseCase)
+        .execute({ actorUserId: actorId, projectId, leadId });
+
+      expect(quoteRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({ clientId }),
+      );
     });
 
-    it('rethrows unrelated database errors untouched', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('translates a composite FK violation into a 404', async () => {
       leadRepository.findByIdInProject.mockResolvedValue(lead);
-      // Una FK violada NO es un conflicto de negocio: debe propagarse para que
-      // el filtro global la trate como 500, no disfrazarse de 409.
       quoteRepository.create.mockRejectedValue(
-        Object.assign(new Error('foreign key violation'), {
-          cause: Object.assign(new Error('fk'), { code: '23503' }),
+        Object.assign(new Error('Failed query'), {
+          cause: Object.assign(new Error('fk'), {
+            code: '23503',
+            constraint_name: 'quotes_client_id_project_id_clients_fk',
+          }),
         }),
       );
 
       await expect(
-        module.get(CreateQuoteUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          leadId,
-          folio: 'COT-2026-0001',
-          subtotal: 1000,
-          tax: 160,
-        }),
-      ).rejects.toThrow('foreign key violation');
+        module
+          .get(CreateQuoteUseCase)
+          .execute({ actorUserId: actorId, projectId, leadId }),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('does not persist anything when the actor lacks QUOTE_CREATE', async () => {
       authorizationService.assertCan.mockRejectedValue(new Error('forbidden'));
 
       await expect(
-        module.get(CreateQuoteUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          leadId,
-          folio: 'COT-2026-0001',
-          subtotal: 1000,
-          tax: 160,
-        }),
+        module
+          .get(CreateQuoteUseCase)
+          .execute({ actorUserId: actorId, projectId, leadId }),
       ).rejects.toThrow('forbidden');
 
       expect(quoteRepository.create).not.toHaveBeenCalled();
@@ -259,54 +378,46 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
   });
 
   describe('list()', () => {
-    it('always scopes the query by projectId', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
-      quoteRepository.listByProject.mockResolvedValue({
-        quotes: [quote(QuoteStatus.DRAFT)],
-        total: 1,
-      });
-
-      const result = await module
-        .get(ListQuotesUseCase)
-        .execute({ actorUserId: actorId, projectId });
-
-      expect(result.quotes).toHaveLength(1);
-      expect(quoteRepository.listByProject).toHaveBeenCalledWith(projectId, {
-        status: undefined,
-        leadId: undefined,
-        page: undefined,
-        limit: undefined,
-      });
-    });
-
-    it('keeps the tenant when filters and pagination are applied', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
-      quoteRepository.listByProject.mockResolvedValue({
-        quotes: [],
-        total: 0,
-      });
+    it('always scopes the query by projectId and forwards the filters', async () => {
+      quoteRepository.listByProject.mockResolvedValue({ quotes: [], total: 0 });
+      const from = new Date('2026-01-01');
 
       await module.get(ListQuotesUseCase).execute({
         actorUserId: actorId,
         projectId,
         status: QuoteStatus.APPROVED,
+        clientId,
         leadId,
+        search: 'COT-0',
+        from,
+        sortBy: 'total',
+        order: 'desc',
         page: 3,
         limit: 5,
       });
 
       expect(quoteRepository.listByProject).toHaveBeenCalledWith(projectId, {
         status: QuoteStatus.APPROVED,
+        clientId,
         leadId,
+        search: 'COT-0',
+        from,
+        to: undefined,
+        sortBy: 'total',
+        order: 'desc',
         page: 3,
         limit: 5,
       });
+      expect(authorizationService.assertCan).toHaveBeenCalledWith(
+        actorId,
+        Permission.QUOTE_READ,
+        projectId,
+      );
     });
   });
 
   describe('get()', () => {
     it('resolves a quote scoped to the project', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
       quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.DRAFT),
       );
@@ -316,14 +427,10 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
         .execute({ actorUserId: actorId, projectId, quoteId });
 
       expect(result.id).toBe(quoteId);
-      expect(quoteRepository.findByIdInProject).toHaveBeenCalledWith(
-        quoteId,
-        projectId,
-      );
+      expect(result.items).toHaveLength(1);
     });
 
     it('returns 404 for a quote in another project (IDOR)', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
       quoteRepository.findByIdInProject.mockResolvedValue(null);
 
       await expect(
@@ -341,123 +448,246 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
     });
   });
 
-  describe('updateStatus()', () => {
-    it('allows a normal DRAFT -> PENDING_APPROVAL step with only QUOTE_READ', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+  describe('update()', () => {
+    it('replaces the items and recalculates totals on a DRAFT', async () => {
       quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.DRAFT),
       );
-      quoteRepository.updateStatusInProject.mockResolvedValue(
-        quote(QuoteStatus.PENDING_APPROVAL),
+      productRepository.findManyByIdsInProject.mockResolvedValue([product]);
+      quoteRepository.updateDraftInProject.mockResolvedValue(
+        quote(QuoteStatus.DRAFT),
       );
 
-      const result = await module.get(UpdateQuoteStatusUseCase).execute({
+      await module.get(UpdateQuoteUseCase).execute({
         actorUserId: actorId,
         projectId,
         quoteId,
-        status: QuoteStatus.PENDING_APPROVAL,
+        notes: 'Nota',
+        items: [{ productId, quantity: 1 }],
       });
 
-      expect(result.status).toBe(QuoteStatus.PENDING_APPROVAL);
-      expect(authorizationService.assertCan).toHaveBeenCalledTimes(1);
-      expect(authorizationService.assertCan).toHaveBeenCalledWith(
-        actorId,
-        Permission.QUOTE_READ,
-        projectId,
-      );
-      expect(quoteRepository.updateStatusInProject).toHaveBeenCalledWith(
+      expect(quoteRepository.updateDraftInProject).toHaveBeenCalledWith(
         quoteId,
         projectId,
-        { status: QuoteStatus.PENDING_APPROVAL },
+        expect.objectContaining({
+          notes: 'Nota',
+          totals: { subtotal: 500, discount: 0, tax: 60, total: 560 },
+        }),
       );
     });
 
-    it('requires QUOTE_APPROVE to move a quote to APPROVED', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
+    it('returns 409 when the quote is no longer a DRAFT', async () => {
       quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.PENDING_APPROVAL),
       );
-      quoteRepository.updateStatusInProject.mockResolvedValue(
+
+      await expect(
+        module
+          .get(UpdateQuoteUseCase)
+          .execute({ actorUserId: actorId, projectId, quoteId, notes: 'x' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(quoteRepository.updateDraftInProject).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when the status changed between read and write', async () => {
+      quoteRepository.findByIdInProject
+        .mockResolvedValueOnce(quote(QuoteStatus.DRAFT))
+        .mockResolvedValueOnce(quote(QuoteStatus.PENDING_APPROVAL));
+      quoteRepository.updateDraftInProject.mockResolvedValue(null);
+
+      await expect(
+        module
+          .get(UpdateQuoteUseCase)
+          .execute({ actorUserId: actorId, projectId, quoteId, notes: 'x' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('returns 404 for a quote in another project', async () => {
+      quoteRepository.findByIdInProject.mockResolvedValue(null);
+
+      await expect(
+        module.get(UpdateQuoteUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          quoteId: foreignQuoteId,
+          notes: 'x',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('delete()', () => {
+    it('deletes a DRAFT', async () => {
+      quoteRepository.deleteDraftInProject.mockResolvedValue(true);
+
+      await module
+        .get(DeleteQuoteUseCase)
+        .execute({ actorUserId: actorId, projectId, quoteId });
+
+      expect(quoteRepository.deleteDraftInProject).toHaveBeenCalledWith(
+        quoteId,
+        projectId,
+      );
+    });
+
+    it('returns 409 for a quote that is not a DRAFT', async () => {
+      quoteRepository.deleteDraftInProject.mockResolvedValue(false);
+      quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.APPROVED),
       );
 
-      await module.get(UpdateQuoteStatusUseCase).execute({
-        actorUserId: actorId,
-        projectId,
-        quoteId,
-        status: QuoteStatus.APPROVED,
-      });
+      await expect(
+        module
+          .get(DeleteQuoteUseCase)
+          .execute({ actorUserId: actorId, projectId, quoteId }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
 
-      expect(authorizationService.assertCan).toHaveBeenNthCalledWith(
-        1,
-        actorId,
-        Permission.QUOTE_READ,
-        projectId,
+    it('returns 404 for a missing or foreign quote', async () => {
+      quoteRepository.deleteDraftInProject.mockResolvedValue(false);
+      quoteRepository.findByIdInProject.mockResolvedValue(null);
+
+      await expect(
+        module.get(DeleteQuoteUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          quoteId: foreignQuoteId,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+  });
+
+  describe('updateStatus()', () => {
+    const move = (status: QuoteStatus) =>
+      module
+        .get(UpdateQuoteStatusUseCase)
+        .execute({ actorUserId: actorId, projectId, quoteId, status });
+
+    it('allows DRAFT -> PENDING_APPROVAL with only QUOTE_CREATE, atomically', async () => {
+      quoteRepository.findByIdInProject.mockResolvedValue(
+        quote(QuoteStatus.DRAFT),
       );
-      expect(authorizationService.assertCan).toHaveBeenNthCalledWith(
-        2,
-        actorId,
-        Permission.QUOTE_APPROVE,
-        projectId,
+      quoteRepository.transitionStatusInProject.mockResolvedValue(
+        quote(QuoteStatus.PENDING_APPROVAL),
       );
+
+      const result = await move(QuoteStatus.PENDING_APPROVAL);
+
+      expect(result.status).toBe(QuoteStatus.PENDING_APPROVAL);
+      expect(authorizationService.assertCan).toHaveBeenCalledTimes(1);
+      expect(quoteRepository.transitionStatusInProject).toHaveBeenCalledWith(
+        quoteId,
+        projectId,
+        {
+          from: QuoteStatus.DRAFT,
+          to: QuoteStatus.PENDING_APPROVAL,
+          at: expect.any(Date) as Date,
+        },
+      );
+    });
+
+    it.each([
+      [QuoteStatus.PENDING_APPROVAL, QuoteStatus.APPROVED, true],
+      [QuoteStatus.ACCEPTED, QuoteStatus.PAID, true],
+      [QuoteStatus.APPROVED, QuoteStatus.SENT, false],
+      [QuoteStatus.SENT, QuoteStatus.ACCEPTED, false],
+      [QuoteStatus.SENT, QuoteStatus.REJECTED, false],
+      [QuoteStatus.PENDING_APPROVAL, QuoteStatus.DRAFT, false],
+    ])('%s -> %s (needs QUOTE_APPROVE: %s)', async (from, to, needsApprove) => {
+      quoteRepository.findByIdInProject.mockResolvedValue(quote(from));
+      quoteRepository.transitionStatusInProject.mockResolvedValue(quote(to));
+
+      await move(to);
+
+      const calls = authorizationService.assertCan.mock.calls.map(
+        (call: unknown[]) => call[1],
+      );
+      expect(calls.includes(Permission.QUOTE_APPROVE)).toBe(needsApprove);
+    });
+
+    it('refuses to approve without QUOTE_APPROVE and writes nothing', async () => {
+      authorizationService.assertCan.mockImplementation(
+        (_user: string, permission: Permission) =>
+          permission === Permission.QUOTE_APPROVE
+            ? Promise.reject(new Error('forbidden'))
+            : Promise.resolve(),
+      );
+
+      await expect(move(QuoteStatus.APPROVED)).rejects.toThrow('forbidden');
+      expect(quoteRepository.transitionStatusInProject).not.toHaveBeenCalled();
     });
 
     it('rejects a DRAFT -> PAID jump that would skip approval', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
       quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.DRAFT),
       );
 
-      await expect(
-        module.get(UpdateQuoteStatusUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          quoteId,
-          status: QuoteStatus.PAID,
-        }),
-      ).rejects.toBeInstanceOf(ConflictException);
-
-      expect(quoteRepository.updateStatusInProject).not.toHaveBeenCalled();
-    });
-
-    it('treats PAID as terminal', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
-      quoteRepository.findByIdInProject.mockResolvedValue(
-        quote(QuoteStatus.PAID),
+      await expect(move(QuoteStatus.PAID)).rejects.toBeInstanceOf(
+        ConflictException,
       );
-
-      await expect(
-        module.get(UpdateQuoteStatusUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          quoteId,
-          status: QuoteStatus.APPROVED,
-        }),
-      ).rejects.toBeInstanceOf(ConflictException);
-
-      expect(quoteRepository.updateStatusInProject).not.toHaveBeenCalled();
+      expect(quoteRepository.transitionStatusInProject).not.toHaveBeenCalled();
     });
+
+    it.each([QuoteStatus.PAID, QuoteStatus.REJECTED])(
+      'treats %s as terminal',
+      async (terminal) => {
+        quoteRepository.findByIdInProject.mockResolvedValue(quote(terminal));
+
+        await expect(move(QuoteStatus.DRAFT)).rejects.toBeInstanceOf(
+          ConflictException,
+        );
+        expect(
+          quoteRepository.transitionStatusInProject,
+        ).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects a no-op transition', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
       quoteRepository.findByIdInProject.mockResolvedValue(
         quote(QuoteStatus.DRAFT),
       );
 
-      await expect(
-        module.get(UpdateQuoteStatusUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          quoteId,
-          status: QuoteStatus.DRAFT,
-        }),
-      ).rejects.toBeInstanceOf(ConflictException);
+      await expect(move(QuoteStatus.DRAFT)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
 
-      expect(quoteRepository.updateStatusInProject).not.toHaveBeenCalled();
+    it('refuses to request approval for a quote without items', async () => {
+      quoteRepository.findByIdInProject.mockResolvedValue(
+        quote(QuoteStatus.DRAFT, false),
+      );
+
+      await expect(move(QuoteStatus.PENDING_APPROVAL)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(quoteRepository.transitionStatusInProject).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when a concurrent request already moved the quote', async () => {
+      quoteRepository.findByIdInProject
+        .mockResolvedValueOnce(quote(QuoteStatus.PENDING_APPROVAL))
+        .mockResolvedValueOnce(quote(QuoteStatus.APPROVED));
+      // El UPDATE atómico no encuentra fila: el estado ya no es el leído.
+      quoteRepository.transitionStatusInProject.mockResolvedValue(null);
+
+      await expect(move(QuoteStatus.APPROVED)).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+    });
+
+    it('returns 404 when the quote vanished before the write', async () => {
+      quoteRepository.findByIdInProject
+        .mockResolvedValueOnce(quote(QuoteStatus.DRAFT))
+        .mockResolvedValueOnce(null);
+      quoteRepository.transitionStatusInProject.mockResolvedValue(null);
+
+      await expect(move(QuoteStatus.PENDING_APPROVAL)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('returns 404 and writes nothing for a quote in another project', async () => {
-      authorizationService.assertCan.mockResolvedValue(undefined);
       quoteRepository.findByIdInProject.mockResolvedValue(null);
 
       await expect(
@@ -469,26 +699,16 @@ describe('Quotes use-cases (tenant isolation + status lifecycle)', () => {
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
 
-      expect(quoteRepository.updateStatusInProject).not.toHaveBeenCalled();
-      expect(quoteRepository.findByIdInProject).toHaveBeenCalledWith(
-        foreignQuoteId,
-        projectId,
-      );
+      expect(quoteRepository.transitionStatusInProject).not.toHaveBeenCalled();
     });
 
-    it('does not write anything when the actor lacks QUOTE_READ', async () => {
+    it('does not write anything when the actor lacks QUOTE_CREATE', async () => {
       authorizationService.assertCan.mockRejectedValue(new Error('forbidden'));
 
-      await expect(
-        module.get(UpdateQuoteStatusUseCase).execute({
-          actorUserId: actorId,
-          projectId,
-          quoteId,
-          status: QuoteStatus.PENDING_APPROVAL,
-        }),
-      ).rejects.toThrow('forbidden');
-
-      expect(quoteRepository.updateStatusInProject).not.toHaveBeenCalled();
+      await expect(move(QuoteStatus.PENDING_APPROVAL)).rejects.toThrow(
+        'forbidden',
+      );
+      expect(quoteRepository.transitionStatusInProject).not.toHaveBeenCalled();
     });
   });
 });

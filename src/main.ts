@@ -2,6 +2,7 @@ import { ValidationPipe, VersioningType } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { parseCorsOrigins } from './common/config/cors';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 
 async function bootstrap(): Promise<void> {
@@ -10,6 +11,18 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.setGlobalPrefix('api');
+
+  // CORS con credenciales: el frontend vive en otro origen y la sesión viaja en
+  // una cookie httpOnly, así que el navegador solo la envía si el origen está
+  // en esta lista y la respuesta lleva Access-Control-Allow-Credentials.
+  const corsOrigins = parseCorsOrigins(
+    process.env.CORS_ORIGINS,
+    process.env.APP_URL,
+  );
+  app.enableCors({
+    origin: corsOrigins.length > 0 ? corsOrigins : false,
+    credentials: true,
+  });
   app.enableVersioning({
     type: VersioningType.URI,
     defaultVersion: '1',

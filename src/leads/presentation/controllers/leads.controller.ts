@@ -13,10 +13,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNoContentResponse,
+  ApiNotFoundResponse,
   ApiOkResponse,
   ApiTags,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { LeadStage, Permission } from '@flowcommerce/types';
 import { AuthenticatedGuard } from '../../../auth/presentation/guards/authenticated.guard';
@@ -35,12 +39,20 @@ import { ListLeadsQueryDto } from '../../presentation/dto/list-leads-query.dto';
 import { PaginatedLeadsDto } from '../../presentation/dto/paginated-leads.dto';
 import { UpdateLeadDto } from '../../presentation/dto/update-lead.dto';
 
+// undefined/null → null; un ISO-8601 ya validado por el DTO → Date.
+const toDateOrNull = (value: string | null | undefined): Date | null =>
+  value ? new Date(value) : null;
+
 // Embudo comercial del tenant. Los guards de clase fijan autenticación y
 // control de acceso por proyecto; cada handler exige su permiso con
 // @RequirePermission. El projectId se toma siempre de la ruta.
 @ApiTags('leads')
 @Controller({ path: 'projects/:projectId/leads', version: '1' })
 @UseGuards(AuthenticatedGuard, ProjectPermissionGuard)
+@ApiUnauthorizedResponse({ description: 'Sin sesión activa' })
+@ApiForbiddenResponse({
+  description: 'Sin el permiso requerido en el proyecto (o proyecto ajeno)',
+})
 export class LeadsController {
   constructor(
     private readonly createLeadUseCase: CreateLeadUseCase,
@@ -53,6 +65,12 @@ export class LeadsController {
   @Post()
   @RequirePermission(Permission.LEAD_CREATE)
   @ApiCreatedResponse({ type: LeadDto })
+  @ApiBadRequestResponse({
+    description: 'Body inválido o responsable que no es miembro del proyecto',
+  })
+  @ApiNotFoundResponse({
+    description: 'Cliente o producto de interés que no es de este proyecto',
+  })
   createLead(
     @CurrentUserId() userId: string,
     @Param('projectId', ParseUUIDPipe) projectId: string,
@@ -67,6 +85,14 @@ export class LeadsController {
         phone: dto.phone ?? null,
         stage: dto.stage ?? LeadStage.NEW,
         score: dto.score ?? 0,
+        company: dto.company ?? null,
+        source: dto.source ?? null,
+        estimatedValue: dto.estimatedValue ?? null,
+        notes: dto.notes ?? null,
+        assignedUserId: dto.assignedUserId ?? null,
+        clientId: dto.clientId ?? null,
+        interestProductId: dto.interestProductId ?? null,
+        lastContactAt: toDateOrNull(dto.lastContactAt),
       })
       .then((lead) => lead.toLead());
   }
@@ -83,7 +109,15 @@ export class LeadsController {
       actorUserId: userId,
       projectId,
       stage: query.stage,
+      stages: query.stages,
       search: query.search,
+      assignedUserId: query.assignedUserId,
+      source: query.source,
+      clientId: query.clientId,
+      createdFrom: query.createdFrom ? new Date(query.createdFrom) : undefined,
+      createdTo: query.createdTo ? new Date(query.createdTo) : undefined,
+      sortBy: query.sortBy,
+      order: query.order,
       page: query.page,
       limit: query.limit,
     });
@@ -113,6 +147,12 @@ export class LeadsController {
   @Patch(':leadId')
   @RequirePermission(Permission.LEAD_UPDATE)
   @ApiOkResponse({ type: LeadDto })
+  @ApiBadRequestResponse({
+    description: 'Body inválido o responsable que no es miembro del proyecto',
+  })
+  @ApiNotFoundResponse({
+    description: 'Lead, cliente o producto que no es de este proyecto',
+  })
   updateLead(
     @CurrentUserId() userId: string,
     @Param('projectId', ParseUUIDPipe) projectId: string,
@@ -129,6 +169,17 @@ export class LeadsController {
         phone: dto.phone,
         stage: dto.stage,
         score: dto.score,
+        company: dto.company,
+        source: dto.source,
+        estimatedValue: dto.estimatedValue,
+        notes: dto.notes,
+        assignedUserId: dto.assignedUserId,
+        clientId: dto.clientId,
+        interestProductId: dto.interestProductId,
+        lastContactAt:
+          dto.lastContactAt === undefined
+            ? undefined
+            : toDateOrNull(dto.lastContactAt),
       })
       .then((lead) => lead.toLead());
   }

@@ -1,6 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { LeadStage, Permission } from '@flowcommerce/types';
-import { NotFoundException } from '../../../common/exceptions/domain.exceptions';
+import { LeadSource, LeadStage, Permission } from '@flowcommerce/types';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '../../../common/exceptions/domain.exceptions';
+import { MEMBERSHIP_REPOSITORY } from '../../../projects/domain/repositories/membership.repository';
 import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   LEADS_REPOSITORY,
@@ -23,8 +28,10 @@ describe('Leads use-cases (tenant isolation)', () => {
     listByProject: jest.fn(),
     create: jest.fn(),
     updateInProject: jest.fn(),
+    linkClientInProject: jest.fn(),
     deleteInProject: jest.fn(),
   };
+  const membershipRepository = { findByUserAndProject: jest.fn() };
 
   const actorId = '11111111-1111-4111-8111-111111111111';
   const projectId = '33333333-3333-4333-8333-333333333333';
@@ -60,6 +67,10 @@ describe('Leads use-cases (tenant isolation)', () => {
           provide: LEADS_REPOSITORY,
           useValue: leadRepository,
         },
+        {
+          provide: MEMBERSHIP_REPOSITORY,
+          useValue: membershipRepository,
+        },
       ],
     }).compile();
   });
@@ -91,11 +102,101 @@ describe('Leads use-cases (tenant isolation)', () => {
         phone: '+52 55 1234 5678',
         stage: LeadStage.NEW,
         score: 0,
+        company: null,
+        source: null,
+        estimatedValue: null,
+        notes: null,
+        assignedUserId: null,
+        clientId: null,
+        interestProductId: null,
+        lastContactAt: null,
       });
       expect(authorizationService.assertCan).toHaveBeenCalledWith(
         actorId,
         Permission.LEAD_CREATE,
         projectId,
+      );
+    });
+
+    it('validates the responsible user as a member of the project', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      membershipRepository.findByUserAndProject.mockResolvedValue(null);
+
+      await expect(
+        module.get(CreateLeadUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          name: 'Ana Torres',
+          email: null,
+          phone: null,
+          stage: LeadStage.NEW,
+          score: 0,
+          assignedUserId: foreignLeadId,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(membershipRepository.findByUserAndProject).toHaveBeenCalledWith(
+        foreignLeadId,
+        projectId,
+      );
+      expect(leadRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('maps a client or product of another project to 404', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      leadRepository.create.mockRejectedValueOnce({
+        cause: {
+          code: '23503',
+          constraint_name: 'leads_client_id_project_id_clients_fk',
+        },
+      });
+
+      await expect(
+        module.get(CreateLeadUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          name: 'Ana Torres',
+          email: null,
+          phone: null,
+          stage: LeadStage.NEW,
+          score: 0,
+          clientId: foreignLeadId,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it('stores the pipeline fields', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      membershipRepository.findByUserAndProject.mockResolvedValue({
+        role: 'MEMBER',
+      });
+      leadRepository.create.mockResolvedValue(lead);
+      const lastContactAt = new Date('2026-09-11T15:00:00.000Z');
+
+      await module.get(CreateLeadUseCase).execute({
+        actorUserId: actorId,
+        projectId,
+        name: 'Andrea López',
+        email: null,
+        phone: null,
+        stage: LeadStage.NEGOTIATION,
+        score: 0,
+        company: 'Constructora Nova',
+        source: LeadSource.REFERRAL,
+        estimatedValue: 28900,
+        notes: 'Necesita integración con su ERP',
+        assignedUserId: actorId,
+        lastContactAt,
+      });
+
+      expect(leadRepository.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: LeadStage.NEGOTIATION,
+          company: 'Constructora Nova',
+          source: LeadSource.REFERRAL,
+          estimatedValue: 28900,
+          assignedUserId: actorId,
+          lastContactAt,
+        }),
       );
     });
 
@@ -165,6 +266,35 @@ describe('Leads use-cases (tenant isolation)', () => {
         page: 2,
         limit: 10,
       });
+    });
+
+    it('forwards the pipeline filters and sorting, still scoped by project', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      leadRepository.listByProject.mockResolvedValue({ leads: [], total: 0 });
+      const createdFrom = new Date('2026-09-01T00:00:00.000Z');
+
+      await module.get(ListLeadsUseCase).execute({
+        actorUserId: actorId,
+        projectId,
+        stages: [LeadStage.NEW, LeadStage.NEGOTIATION],
+        assignedUserId: actorId,
+        source: LeadSource.WEBSITE,
+        createdFrom,
+        sortBy: 'estimatedValue',
+        order: 'desc',
+      });
+
+      expect(leadRepository.listByProject).toHaveBeenCalledWith(
+        projectId,
+        expect.objectContaining({
+          stages: [LeadStage.NEW, LeadStage.NEGOTIATION],
+          assignedUserId: actorId,
+          source: LeadSource.WEBSITE,
+          createdFrom,
+          sortBy: 'estimatedValue',
+          order: 'desc',
+        }),
+      );
     });
 
     it('returns the repository total so the page can be built', async () => {
@@ -304,6 +434,40 @@ describe('Leads use-cases (tenant isolation)', () => {
       );
     });
 
+    it('rejects a responsible user from another project before writing', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      membershipRepository.findByUserAndProject.mockResolvedValue(null);
+
+      await expect(
+        module.get(UpdateLeadUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          leadId,
+          assignedUserId: foreignLeadId,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(leadRepository.updateInProject).not.toHaveBeenCalled();
+    });
+
+    it('maps an interest product of another project to 404', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      leadRepository.updateInProject.mockRejectedValueOnce({
+        cause: {
+          code: '23503',
+          constraint_name: 'leads_interest_product_id_project_id_products_fk',
+        },
+      });
+
+      await expect(
+        module.get(UpdateLeadUseCase).execute({
+          actorUserId: actorId,
+          projectId,
+          leadId,
+          interestProductId: foreignLeadId,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
     it('does not write anything when the actor lacks LEAD_UPDATE', async () => {
       authorizationService.assertCan.mockRejectedValue(new Error('forbidden'));
 
@@ -323,7 +487,7 @@ describe('Leads use-cases (tenant isolation)', () => {
   describe('delete()', () => {
     it('scopes the delete by (leadId, projectId)', async () => {
       authorizationService.assertCan.mockResolvedValue(undefined);
-      leadRepository.deleteInProject.mockResolvedValue(true);
+      leadRepository.deleteInProject.mockResolvedValue('DELETED');
 
       await module
         .get(DeleteLeadUseCase)
@@ -342,7 +506,7 @@ describe('Leads use-cases (tenant isolation)', () => {
 
     it('does not delete leads outside the project (404)', async () => {
       authorizationService.assertCan.mockResolvedValue(undefined);
-      leadRepository.deleteInProject.mockResolvedValue(false);
+      leadRepository.deleteInProject.mockResolvedValue('NOT_FOUND');
 
       await expect(
         module.get(DeleteLeadUseCase).execute({
@@ -356,6 +520,17 @@ describe('Leads use-cases (tenant isolation)', () => {
         foreignLeadId,
         projectId,
       );
+    });
+
+    it('refuses with 409 when the lead has quotes beyond DRAFT or messages', async () => {
+      authorizationService.assertCan.mockResolvedValue(undefined);
+      leadRepository.deleteInProject.mockResolvedValue('HAS_HISTORY');
+
+      await expect(
+        module
+          .get(DeleteLeadUseCase)
+          .execute({ actorUserId: actorId, projectId, leadId }),
+      ).rejects.toBeInstanceOf(ConflictException);
     });
 
     it('does not delete anything when the actor lacks LEAD_DELETE', async () => {

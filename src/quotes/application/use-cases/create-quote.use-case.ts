@@ -1,10 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
-import {
-  ConflictException,
-  NotFoundException,
-} from '../../../common/exceptions/domain.exceptions';
-import { Permission, QuoteStatus } from '@flowcommerce/types';
+import { Permission } from '@flowcommerce/types';
 import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
+import {
+  CLIENTS_REPOSITORY,
+  type ClientRepository,
+} from '../../../clients/domain/repositories/client.repository';
+import { NotFoundException } from '../../../common/exceptions/domain.exceptions';
 import {
   LEADS_REPOSITORY,
   type LeadRepository,
@@ -14,17 +15,23 @@ import {
   QUOTES_REPOSITORY,
   type QuoteRepository,
 } from '../../domain/repositories/quote.repository';
+import { QuoteItemsBuilder, type QuoteItemInput } from '../quote-items.builder';
+import { QuoteSettingsReader } from '../quote-settings.reader';
+import { rethrowQuoteReferenceError } from '../quote-reference-errors';
 
-// El use-case NO acepta total ni status desde el controller: recalcula el total
-// como subtotal + tax y fuerza el status inicial a DRAFT. Declararlo aquí, en
-// vez de en el DTO de HTTP, blinda también a los llamantes internos.
+// El use-case NO acepta folio, importes ni status: el folio es correlativo y lo
+// genera el servidor, los importes salen del catálogo y el status inicial es
+// siempre DRAFT.
 export interface CreateQuoteInput {
   actorUserId: string;
   projectId: string;
   leadId: string;
-  folio: string;
-  subtotal: number;
-  tax: number;
+  // Si se omite, se usa el cliente del lead (si tiene).
+  clientId?: string | null;
+  validUntil?: Date | null;
+  notes?: string | null;
+  terms?: string | null;
+  items?: QuoteItemInput[];
 }
 
 @Injectable()
@@ -35,18 +42,15 @@ export class CreateQuoteUseCase {
     private readonly quoteRepository: QuoteRepository,
     @Inject(LEADS_REPOSITORY)
     private readonly leadRepository: LeadRepository,
+    @Inject(CLIENTS_REPOSITORY)
+    private readonly clientRepository: ClientRepository,
+    private readonly itemsBuilder: QuoteItemsBuilder,
+    private readonly settingsReader: QuoteSettingsReader,
   ) {}
 
-  // Crea una cotización tras verificar QUOTE_CREATE.
-  //
-  // El leadId viene del body, así que hay que comprobar que ese lead pertenece
-  // REALMENTE al proyecto. Sin esta comprobación la FK compuesta
-  // (lead_id, project_id) rechazaría la inserción con un 500, que le filtra al
-  // cliente la forma de la base de datos. Validarlo aquí devuelve un 404 limpio
-  // e indistinguible del caso "no existe".
-  //
-  // El status inicial se fuerza a DRAFT: una cotización no nace aprobada ni
-  // pagada aunque el cliente lo pida, para que el flujo de aprobación sea real.
+  // Crea un borrador tras verificar QUOTE_CREATE. Lead, cliente y productos
+  // vienen del body, así que se comprueba que pertenecen REALMENTE al proyecto:
+  // un id ajeno es indistinguible de uno inexistente (404).
   async execute(input: CreateQuoteInput): Promise<QuoteEntity> {
     await this.authorizationService.assertCan(
       input.actorUserId,
@@ -58,71 +62,51 @@ export class CreateQuoteUseCase {
       input.leadId,
       input.projectId,
     );
-
     if (!lead) {
       throw new NotFoundException('Lead not found in this project');
     }
 
-    // El total no se toma del cliente: se recalcula a partir de subtotal + tax.
-    // Aceptarlo del body permitiría crear cotizaciones incoherentes cuyo total
-    // no cuadra con sus partidas, y ese número es el que ve el cliente final.
-    const subtotal = input.subtotal;
-    const tax = input.tax;
-    const total = Number((subtotal + tax).toFixed(2));
-
-    if (total < 0) {
-      throw new ConflictException('Quote total cannot be negative');
+    const clientId =
+      input.clientId === undefined ? lead.clientId : input.clientId;
+    if (clientId) {
+      const client = await this.clientRepository.findByIdInProject(
+        clientId,
+        input.projectId,
+      );
+      if (!client) {
+        throw new NotFoundException('Client not found in this project');
+      }
     }
+
+    const settings = await this.settingsReader.get(input.projectId);
+
+    // Vigencia y condiciones por defecto salen de los ajustes del proyecto; un
+    // null explícito en validUntil significa "sin vencimiento".
+    const validUntil =
+      input.validUntil === undefined
+        ? new Date(Date.now() + settings.validityDays * 86_400_000)
+        : input.validUntil;
+
+    const { items, totals } = await this.itemsBuilder.build(
+      input.projectId,
+      input.items ?? [],
+    );
 
     try {
       return await this.quoteRepository.create({
         projectId: input.projectId,
         leadId: input.leadId,
-        folio: input.folio,
-        subtotal,
-        tax,
-        total,
-        status: QuoteStatus.DRAFT,
+        clientId,
+        createdByUserId: input.actorUserId,
+        folioPrefix: settings.folioPrefix,
+        validUntil,
+        notes: input.notes ?? null,
+        terms: input.terms === undefined ? settings.defaultTerms : input.terms,
+        totals,
+        items,
       });
     } catch (error) {
-      // El folio es único por proyecto. Si choca, la restricción de la base es
-      // la fuente de verdad y aquí se traduce a un 409 con mensaje útil en vez
-      // de dejar escapar un error de PostgreSQL como 500.
-      if (this.isUniqueViolation(error)) {
-        throw new ConflictException(
-          `A quote with folio "${input.folio}" already exists in this project`,
-        );
-      }
-      throw error;
+      rethrowQuoteReferenceError(error);
     }
-  }
-
-  // Identifica el SQLSTATE 23505 (unique_violation).
-  //
-  // NO se comprueba solo `error.code`: Drizzle envuelve los errores del driver
-  // en un DrizzleQueryError y deja el SQLSTATE real en `error.cause.code`.
-  // Comprobar únicamente el nivel superior deja pasar la violación y el cliente
-  // recibe un 500 en lugar de un 409. Se recorre la cadena de `cause` porque el
-  // nivel de anidamiento depende de la versión de Drizzle.
-  private isUniqueViolation(error: unknown): boolean {
-    let current = error;
-    // Límite alto a propósito: se detiene en cuanto se cicla o se agota.
-    for (let depth = 0; depth < 10; depth++) {
-      if (typeof current !== 'object' || current === null) {
-        return false;
-      }
-
-      if ((current as { code?: unknown }).code === '23505') {
-        return true;
-      }
-
-      if (!('cause' in current)) {
-        return false;
-      }
-
-      current = (current as { cause?: unknown }).cause;
-    }
-
-    return false;
   }
 }

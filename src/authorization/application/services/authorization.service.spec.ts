@@ -7,14 +7,14 @@ import { AuthorizationService } from './authorization.service';
 describe('AuthorizationService', () => {
   let service: AuthorizationService;
   const membershipRepository = {
-    findById: jest.fn(),
-    findMemberById: jest.fn(),
+    findByIdInProject: jest.fn(),
+    findMemberByIdInProject: jest.fn(),
     findByUserAndProject: jest.fn(),
     findMembersByProject: jest.fn(),
     findMyProjects: jest.fn(),
     create: jest.fn(),
-    updateRole: jest.fn(),
-    delete: jest.fn(),
+    updateRoleInProject: jest.fn(),
+    deleteInProject: jest.fn(),
     countOwners: jest.fn(),
   };
 

@@ -30,6 +30,7 @@ describe('SendMessageUseCase', () => {
     listByProject: jest.fn(),
     create: jest.fn(),
     updateInProject: jest.fn(),
+    linkClientInProject: jest.fn(),
     deleteInProject: jest.fn(),
   };
   const whatsappGateway: Record<keyof WhatsAppGateway, jest.Mock> = {

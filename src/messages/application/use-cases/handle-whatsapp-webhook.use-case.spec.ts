@@ -30,6 +30,7 @@ describe('HandleWhatsAppWebhookUseCase', () => {
     listByProject: jest.fn(),
     create: jest.fn(),
     updateInProject: jest.fn(),
+    linkClientInProject: jest.fn(),
     deleteInProject: jest.fn(),
   };
   const messagesRepository: Record<keyof MessagesRepository, jest.Mock> = {
@@ -161,6 +162,54 @@ describe('HandleWhatsAppWebhookUseCase', () => {
       signatureHeader: signWhatsAppPayload(rawBody, appSecret),
       payload,
     });
+
+    expect(leadRepository.findByPhoneDigitsInProject).not.toHaveBeenCalled();
+    expect(messagesRepository.createIfNotExists).not.toHaveBeenCalled();
+  });
+
+  it('does not persist events that carry no phone_number_id (fail-closed)', async () => {
+    const payload = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                messages: inboundPayload.entry[0].changes[0].value.messages,
+                statuses: [{ id: 'wamid.out-1', status: 'read' }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+
+    await module.get(HandleWhatsAppWebhookUseCase).execute({
+      rawBody,
+      signatureHeader: signWhatsAppPayload(rawBody, appSecret),
+      payload,
+    });
+
+    expect(leadRepository.findByPhoneDigitsInProject).not.toHaveBeenCalled();
+    expect(messagesRepository.createIfNotExists).not.toHaveBeenCalled();
+    expect(messagesRepository.updateStatusInProject).not.toHaveBeenCalled();
+  });
+
+  it('persists nothing when WHATSAPP_PHONE_NUMBER_ID is not configured', async () => {
+    const saved = config.WHATSAPP_PHONE_NUMBER_ID;
+    delete config.WHATSAPP_PHONE_NUMBER_ID;
+    try {
+      const rawBody = Buffer.from(JSON.stringify(inboundPayload));
+
+      await module.get(HandleWhatsAppWebhookUseCase).execute({
+        rawBody,
+        signatureHeader: signWhatsAppPayload(rawBody, appSecret),
+        payload: inboundPayload,
+      });
+    } finally {
+      config.WHATSAPP_PHONE_NUMBER_ID = saved;
+    }
 
     expect(leadRepository.findByPhoneDigitsInProject).not.toHaveBeenCalled();
     expect(messagesRepository.createIfNotExists).not.toHaveBeenCalled();

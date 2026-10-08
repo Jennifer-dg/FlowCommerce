@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { buildSignedSessionToken } from './session-cookie.helper';
+import { REMEMBERED_SESSION_SECONDS } from './session-lifetime';
 
 export interface SessionCookieDefinition {
   name: string;
@@ -9,7 +10,14 @@ export interface SessionCookieDefinition {
   sameSite: 'lax' | 'strict' | 'none';
   secure: boolean;
   path: string;
+  // En milisegundos (unidad de res.cookie de Express). Ausente = cookie de
+  // sesión del navegador.
   maxAge?: number;
+}
+
+export interface BuildSessionCookieOptions {
+  // true = «Recordarme»: la cookie sobrevive al cierre del navegador.
+  persistent?: boolean;
 }
 
 // Construye y limpia la cookie de sesión firmada que espera Better Auth.
@@ -29,7 +37,10 @@ export class SessionCookieService {
     return this.cookieName;
   }
 
-  async build(token: string): Promise<SessionCookieDefinition> {
+  async build(
+    token: string,
+    options: BuildSessionCookieOptions = {},
+  ): Promise<SessionCookieDefinition> {
     const value = await buildSignedSessionToken(token, this.secret);
     const secure = process.env.NODE_ENV === 'production';
     return {
@@ -39,6 +50,9 @@ export class SessionCookieService {
       sameSite: 'lax',
       secure,
       path: '/',
+      ...(options.persistent
+        ? { maxAge: REMEMBERED_SESSION_SECONDS * 1000 }
+        : {}),
     };
   }
 

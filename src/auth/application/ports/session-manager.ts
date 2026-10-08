@@ -1,5 +1,7 @@
 import type {
   AuthenticatedSession,
+  RequestPasswordResetInput,
+  ResetPasswordInput,
   SessionTokenResult,
   SignInSessionInput,
   SignUpSessionInput,
@@ -12,6 +14,8 @@ export interface SessionManager {
   signIn(input: SignInSessionInput): Promise<SessionTokenResult>;
   getSession(headers: Headers): Promise<AuthenticatedSession | null>;
   signOut(headers: Headers): Promise<void>;
+  requestPasswordReset(input: RequestPasswordResetInput): Promise<void>;
+  resetPassword(input: ResetPasswordInput): Promise<void>;
 }
 
 export const SESSION_MANAGER = Symbol('SESSION_MANAGER');

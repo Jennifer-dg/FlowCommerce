@@ -1,4 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Permission } from '@flowcommerce/types';
+import { AuthorizationService } from '../../../authorization/application/services/authorization.service';
 import {
   ForbiddenException,
   NotFoundException,
@@ -9,21 +11,25 @@ import { RemoveMemberUseCase } from './remove-member.use-case';
 describe('RemoveMemberUseCase', () => {
   let useCase: RemoveMemberUseCase;
   const membershipRepository = {
-    findById: jest.fn(),
-    findMemberById: jest.fn(),
+    findByIdInProject: jest.fn(),
+    findMemberByIdInProject: jest.fn(),
     findByUserAndProject: jest.fn(),
     findMembersByProject: jest.fn(),
     findMyProjects: jest.fn(),
     create: jest.fn(),
-    updateRole: jest.fn(),
-    delete: jest.fn(),
+    updateRoleInProject: jest.fn(),
+    deleteInProject: jest.fn(),
     countOwners: jest.fn(),
+  };
+  const authorizationService = {
+    assertCan: jest.fn(),
   };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         RemoveMemberUseCase,
+        { provide: AuthorizationService, useValue: authorizationService },
         {
           provide: MEMBERSHIP_REPOSITORY,
           useValue: membershipRepository,
@@ -33,6 +39,7 @@ describe('RemoveMemberUseCase', () => {
 
     useCase = module.get(RemoveMemberUseCase);
     jest.clearAllMocks();
+    authorizationService.assertCan.mockResolvedValue(undefined);
   });
 
   const now = new Date('2026-01-01T00:00:00.000Z');
@@ -62,7 +69,10 @@ describe('RemoveMemberUseCase', () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('MEMBER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
+    membershipRepository.deleteInProject.mockResolvedValue(true);
 
     await useCase.execute({
       actorUserId: actorId,
@@ -70,13 +80,21 @@ describe('RemoveMemberUseCase', () => {
       targetMembershipId,
     });
 
-    expect(membershipRepository.delete).toHaveBeenCalledWith(
+    expect(authorizationService.assertCan).toHaveBeenCalledWith(
+      actorId,
+      Permission.MEMBER_REMOVE,
+      projectId,
+    );
+    expect(membershipRepository.deleteInProject).toHaveBeenCalledWith(
       targetMembershipId,
+      projectId,
     );
   });
 
-  it('rejects a non-member actor', async () => {
-    membershipRepository.findByUserAndProject.mockResolvedValue(null);
+  it('rejects an actor without MEMBER_REMOVE before touching memberships', async () => {
+    authorizationService.assertCan.mockRejectedValueOnce(
+      new ForbiddenException('Insufficient permissions for this project'),
+    );
 
     await expect(
       useCase.execute({
@@ -85,17 +103,19 @@ describe('RemoveMemberUseCase', () => {
         targetMembershipId,
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.delete).not.toHaveBeenCalled();
+    expect(membershipRepository.findByUserAndProject).not.toHaveBeenCalled();
+    expect(membershipRepository.findByIdInProject).not.toHaveBeenCalled();
+    expect(membershipRepository.deleteInProject).not.toHaveBeenCalled();
   });
 
-  it('rejects removing a membership from another project', async () => {
+  it('returns 404 if the scoped delete affects no row', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue({
-      ...membership('MEMBER'),
-      projectId: 'other-project',
-    });
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('MEMBER'),
+    );
+    membershipRepository.deleteInProject.mockResolvedValue(false);
 
     await expect(
       useCase.execute({
@@ -106,11 +126,8 @@ describe('RemoveMemberUseCase', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('prevents an ADMIN from removing an OWNER', async () => {
-    membershipRepository.findByUserAndProject.mockResolvedValue(
-      baseActor('ADMIN'),
-    );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+  it('rejects an actor whose membership disappeared after the permission check', async () => {
+    membershipRepository.findByUserAndProject.mockResolvedValue(null);
 
     await expect(
       useCase.execute({
@@ -119,14 +136,56 @@ describe('RemoveMemberUseCase', () => {
         targetMembershipId,
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.delete).not.toHaveBeenCalled();
+    expect(membershipRepository.deleteInProject).not.toHaveBeenCalled();
+  });
+
+  it('rejects removing a membership from another project', async () => {
+    membershipRepository.findByUserAndProject.mockResolvedValue(
+      baseActor('OWNER'),
+    );
+    // El repositorio filtra por (id, projectId): una membership de otro
+    // proyecto no aparece.
+    membershipRepository.findByIdInProject.mockResolvedValue(null);
+
+    await expect(
+      useCase.execute({
+        actorUserId: actorId,
+        projectId,
+        targetMembershipId,
+      }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(membershipRepository.findByIdInProject).toHaveBeenCalledWith(
+      targetMembershipId,
+      projectId,
+    );
+    expect(membershipRepository.deleteInProject).not.toHaveBeenCalled();
+  });
+
+  it('prevents an ADMIN from removing an OWNER', async () => {
+    membershipRepository.findByUserAndProject.mockResolvedValue(
+      baseActor('ADMIN'),
+    );
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
+
+    await expect(
+      useCase.execute({
+        actorUserId: actorId,
+        projectId,
+        targetMembershipId,
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(membershipRepository.deleteInProject).not.toHaveBeenCalled();
   });
 
   it('prevents removing the last OWNER', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
     membershipRepository.countOwners.mockResolvedValue(1);
 
     await expect(
@@ -136,15 +195,18 @@ describe('RemoveMemberUseCase', () => {
         targetMembershipId,
       }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(membershipRepository.delete).not.toHaveBeenCalled();
+    expect(membershipRepository.deleteInProject).not.toHaveBeenCalled();
   });
 
   it('allows removing an OWNER when another OWNER exists', async () => {
     membershipRepository.findByUserAndProject.mockResolvedValue(
       baseActor('OWNER'),
     );
-    membershipRepository.findById.mockResolvedValue(membership('OWNER'));
+    membershipRepository.findByIdInProject.mockResolvedValue(
+      membership('OWNER'),
+    );
     membershipRepository.countOwners.mockResolvedValue(2);
+    membershipRepository.deleteInProject.mockResolvedValue(true);
 
     await useCase.execute({
       actorUserId: actorId,
@@ -152,8 +214,9 @@ describe('RemoveMemberUseCase', () => {
       targetMembershipId,
     });
 
-    expect(membershipRepository.delete).toHaveBeenCalledWith(
+    expect(membershipRepository.deleteInProject).toHaveBeenCalledWith(
       targetMembershipId,
+      projectId,
     );
   });
 });

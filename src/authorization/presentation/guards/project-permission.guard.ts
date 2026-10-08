@@ -13,6 +13,9 @@ import {
 } from '../decorators/require-permission.decorator';
 import { AuthorizationService } from '../../application/services/authorization.service';
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Autoriza el acceso a una ruta con ámbito de proyecto.
 // - Se ejecuta DESPUÉS de `AuthenticatedGuard` (que define `request.userId`).
 // - La ruta debe declarar `@RequirePermission(...)`.
@@ -35,7 +38,19 @@ export class ProjectPermissionGuard implements CanActivate {
       RequiredPermissions | undefined
     >(REQUIRED_PERMISSIONS_KEY, [context.getHandler(), context.getClass()]);
 
+    const projectId = this.resolveProjectId(request);
+
+    // Fail-closed en rutas con ámbito de proyecto: una ruta bajo
+    // `:projectId` que no declara permisos es un error de implementación y no
+    // debe quedar abierta a cualquier usuario autenticado. Solo las rutas sin
+    // contexto de proyecto (p.ej. POST /projects, GET /projects/my) atraviesan
+    // el guard sin permiso explícito.
     if (!permissions || permissions.length === 0) {
+      if (projectId) {
+        throw new ForbiddenException(
+          'Insufficient permissions for this project',
+        );
+      }
       return true;
     }
 
@@ -44,9 +59,16 @@ export class ProjectPermissionGuard implements CanActivate {
       throw new UnauthorizedException('No active session');
     }
 
-    const projectId = this.resolveProjectId(request);
     if (!projectId) {
       throw new ForbiddenException('Project context is required');
+    }
+
+    // El guard se ejecuta ANTES de los pipes de ruta (ParseUUIDPipe), así que
+    // un :projectId malformado llegaría a la base como literal uuid inválido y
+    // explotaría en un 500. Rechazarlo aquí con el mismo 403 genérico no filtra
+    // nada y devuelve un error limpio.
+    if (!UUID_RE.test(projectId)) {
+      throw new ForbiddenException('Insufficient permissions for this project');
     }
 
     const decision = await this.authorizationService.decide(
